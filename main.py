@@ -30,6 +30,8 @@ class Net(nn.Module):
 
 
 running_loss = 0
+
+
 def join_backward(loss, optimizer, update=False):
     global running_loss
     running_loss += loss
@@ -60,6 +62,8 @@ def train(args, model, device, train_loader, optimizer, exp):
 
 
 accs, loss = [], []
+
+
 def test(args, model, device, test_loader):
     global accs, loss
     model.eval()
@@ -84,11 +88,11 @@ def test(args, model, device, test_loader):
     loss = np.concatenate([loss, np.array([test_loss])])
 
     if args.num_updates is None:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%d.npz' %
+        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
                  (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
                  loss=loss)
     else:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%d.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
+        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
                                                                      args.num_lexp, args.id), accs=accs, loss=loss)
 
 
@@ -113,7 +117,8 @@ def main():
     parser.add_argument('--no-save', action='store_false', dest='save_model',
                         help='For Saving the current Model')
 
-    parser.add_argument('--id', type=int, help="Identify multiple runs with same params")
+    parser.add_argument('--id', type=str, help="Identify multiple runs with same params")
+    parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
 
     # incremental training args
     parser.add_argument('--num-exemplars', type=int, dest='num_explr')
@@ -150,6 +155,9 @@ def main():
         batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
     model = Net().to(device)
+    if args.pt is not None:
+        model.load_state_dict(torch.load(args.pt))
+
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
     assert args.num_lexp % 10 == 0
@@ -186,10 +194,10 @@ def main():
 
     if (args.save_model):
         if args.num_updates is None:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%d.pt' %
+            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.pt' %
                        (args.lexp_len, args.num_explr, args.num_epoch, args.num_updates, args.num_lexp, args.id))
         else:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%d.pt' %
+            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s.pt' %
                        (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id))
 
 
