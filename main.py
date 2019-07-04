@@ -8,6 +8,7 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import SubsetRandomSampler, DataLoader
 import numpy as np
+from stats_tracking import ActivationTracker
 
 
 class Net(nn.Module):
@@ -64,19 +65,24 @@ def train(args, model, device, train_loader, optimizer, exp):
 accs, loss = [], []
 
 
-def test(args, model, device, test_loader):
+def test(args, model, device, test_loaders, stats_tracker=None):
     global accs, loss
     model.eval()
     test_loss = 0
     correct = 0
-    totals = [np.where(test_loader.dataset.train_labels == i)[0].shape[0] for i in range(10)]
     with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
+        for i, test_loader in enumerate(test_loaders):
+            for data, target in test_loader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                correct += pred.eq(target.view_as(pred)).sum().item()
+            if args.track_stats:
+                # currently tracking abs_out, grad, abs_grad, abs_grad_x_out
+                for l in ['conv1', 'conv2', 'fc1', 'fc2']:
+                    m = model.__dict__[l]
+
 
     test_loss /= len(test_loader.dataset)
 
@@ -120,6 +126,9 @@ def main():
     parser.add_argument('--id', type=str, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
 
+    # stat tracking args
+    parser.add_argument('--track-stats', action='store_true', help='Enable stat tracking')
+
     # incremental training args
     parser.add_argument('--num-exemplars', type=int, dest='num_explr')
     parser.add_argument('--lexp-len', type=int, default=100) # Full dataset has > 5000 samples per class
@@ -147,16 +156,23 @@ def main():
                                  transforms.ToTensor(),
                                  transforms.Normalize((0.1307,), (0.3081,))
                              ]))
-    test_loader = DataLoader(
-        datasets.MNIST('../data', train=False, transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])),
-        batch_size=args.test_batch_size, shuffle=True, **kwargs)
+    test_set = datasets.MNIST('../data', train=False, transform=transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ]))
+
+    def make_sampler(i):
+        select = np.where(test_set.train_labels == i)[0]
+        indices = np.random.choice(select, len(select), replace=False)
+        return torch.utils.data.SubsetRandomSampler(indices.astype('int64'))
+    test_loaders = [torch.utils.data.Dataloader(test_set, batch_size=args.test_batch_size, shuffle=False,
+                                                sampler=make_sampler(i), **kwargs) for i in range(10)]
 
     model = Net().to(device)
     if args.pt is not None:
         model.load_state_dict(torch.load(args.pt))
+
+    stats_tracker = ActivationTracker(model)
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
@@ -188,7 +204,10 @@ def main():
                                                    batch_size=args.batch_size, shuffle=False, sampler=sampler,
                                                    **kwargs)
         train(args, model, device, train_loader, optimizer, itr)
-        test(args, model, device, test_loader)
+        test(args, model, device, test_loaders, stats_tracker)
+
+        # save abs_out
+
         if args.num_explr > 0:
             exemplars[i] = np.random.choice(indices, args.num_explr, replace=False)
 
