@@ -125,11 +125,10 @@ class ActivationTracker(Tracker):
         output: running average of the layers outputs
         grad: running output of the gradient backpropagated to this layer
         output * grad
-        abs_out: |output|
         abs_grad: |grad|
         abs_grad_x_out: |grad_x_out|
     """
-    STATS = ['out', 'grad', 'grad_x_out', 'abs_out', 'abs_grad', 'abs_grad_x_out', 'sigma_out']
+    STATS = ['out', 'grad', 'grad_x_out', 'abs_grad', 'abs_grad_x_out', 'sigma_out']
 
     def __init__(self, *args, **kwargs):
         super(ActivationTracker, self).__init__(*args, **kwargs)
@@ -149,7 +148,6 @@ class ActivationTracker(Tracker):
 
         # update stats
         module.running_stats.out(output)
-        module.running_stats.abs_out(output.abs())
 
     def _b_hook(self, module, grad):
         # get module name
