@@ -1,9 +1,8 @@
 import numpy as np
 import torch.nn as nn
 import torch
-from torchvision import datasets, transforms
 from stats_tracking import ActivationTracker
-from main import Net
+from test import get_batch_suite
 
 
 def test_layer():
@@ -28,16 +27,7 @@ def test_layer():
 
 
 def test_net():
-    net = Net()
-    tracker = ActivationTracker(net)
-    x_ent = nn.CrossEntropyLoss()
-    d_set = datasets.MNIST('../data', train=True, download=True,
-                               transform=transforms.Compose([
-                                   transforms.ToTensor(),
-                                   transforms.Normalize((0.1307,), (0.3081,))
-                               ]))
-    d_set = torch.utils.data.Subset(d_set, np.arange(10))
-    loader = torch.utils.data.DataLoader(d_set, batch_size=10, shuffle=False, num_workers=1, pin_memory=True)
+    net, x_ent, loader = get_batch_suite()
     for i, (x, y) in enumerate(loader):
         logits = net(x)
         loss = x_ent(logits, y)
