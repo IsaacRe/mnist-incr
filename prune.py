@@ -30,6 +30,7 @@ class DynamicPrune:
         self.name_from_module = {}
         self._f_hooks = {}
         self.masks = {}
+        self.prune_ratio = {}
         self._setup_pruning(prune_args, prune_kwargs)
         # bool whether currently masking pruned outputs
         self.masking = True
@@ -69,6 +70,7 @@ class ActivationPrune(DynamicPrune):
         m_name = self.name_from_module[module]
         mask = self.masks[m_name]
         output[(slice(None), *mask)] = 0.0
+        self.prune_ratio[m_name] = int(mask[0].shape[0]), int(output[0].numel())
         return None
 
     def prune(self, module, *args, **kwargs):

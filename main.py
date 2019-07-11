@@ -6,9 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
-from torch.utils.data import SubsetRandomSampler, DataLoader
+from torch.utils.data import SubsetRandomSampler
 import numpy as np
 from stats_tracking import ActivationTracker
+from prune import ActivationPrune
 
 
 class Net(nn.Module):
@@ -72,7 +73,7 @@ def train(args, model, device, train_loader, optimizer, exp=0):
 accs, loss = [], []
 
 
-def test(args, model, device, test_loaders, stats_tracker=None):
+def test(args, model, device, test_loaders, stats_tracker=None, pruner=None):
     global accs, loss
     model.eval()
     test_loss = 0
@@ -84,10 +85,10 @@ def test(args, model, device, test_loaders, stats_tracker=None):
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
-    if args.track_stats:
+    if stats_tracker is not None:
         # currently tracking abs_out, grad, abs_grad, abs_grad_x_out
         all_stats = {}
-        for name, stats in stats_tracker.export_stats('abs_out', 'abs_grad_x_out'):
+        for name, stats in stats_tracker.export_stats(*args.stats):
             all_stats[name] = stats
         np.savez('network_stats/activations.npz', **all_stats)
 
@@ -97,16 +98,25 @@ def test(args, model, device, test_loaders, stats_tracker=None):
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
-    accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
-    loss = np.concatenate([loss, np.array([test_loss])])
+    if pruner is not None and pruner.masking:
+        num_out, num_prune = 0, 0
+        for masked, total in pruner.prune_ratio.values():
+            num_out += total
+            num_prune += masked
 
-    if args.num_updates is None:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
-                 (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
-                 loss=loss)
-    else:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
-                                                                     args.num_lexp, args.id), accs=accs, loss=loss)
+        print('\nNumber of pruned outputs: {}/{}'.format(num_prune, num_out))
+
+    if not args.track_stats:
+        accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
+        loss = np.concatenate([loss, np.array([test_loss])])
+
+        if args.num_updates is None:
+            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
+                     (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
+                     loss=loss)
+        else:
+            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
+                                                                         args.num_lexp, args.id), accs=accs, loss=loss)
 
 
 def main():
@@ -136,6 +146,15 @@ def main():
     # stat tracking args
     parser.add_argument('--track-stats', action='store_true', help='Enable stat tracking')
     parser.add_argument('--track-logits', action='store_true', help='Whether to track the final fc layer activations')
+    parser.add_argument('--stats', type=str, nargs='+', choices=ActivationTracker.STATS, default=['out'],
+                        help='Specify the stat(s) to be tracked')
+
+    # pruning args
+    parser.add_argument('--test-prune', action='store_true',
+                        help='Whether to test effect of network pruning on accuracy - only implemented for batch learning')
+    parser.add_argument('--alpha', type=float, default=0.1, help='Threshold for pruning by the given statistic')
+    parser.add_argument('--prune-by', type=str, default='out',
+                        help='The statistic by which the network outputs will be pruned')
 
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
@@ -228,6 +247,9 @@ def main():
                                                    **kwargs)
         train(args, model, device, train_loader, optimizer)
         test(args, model, device, test_loaders, stats_tracker)
+        if args.test_prune:
+            pruner = ActivationPrune(model, args.prune_by, alpha=args.alpha)
+            test(args, model, device, test_loaders, pruner=pruner)
 
     if (args.save_model):
         if args.num_updates is None:
