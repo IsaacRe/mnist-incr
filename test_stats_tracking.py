@@ -5,6 +5,9 @@ from stats_tracking import ActivationTracker
 from test import get_batch_suite
 
 
+batch_size = 10
+
+
 def test_layer():
     layer = nn.Linear(10, 10)
     # check tracking setup
@@ -27,7 +30,7 @@ def test_layer():
 
 
 def test_net():
-    net, x_ent, loader = get_batch_suite()
+    net, x_ent, loader = get_batch_suite(batch_size)
     for i, (x, y) in enumerate(loader):
         logits = net(x)
         loss = x_ent(logits, y)
