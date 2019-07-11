@@ -21,11 +21,8 @@ class DynamicPrune:
         _prune(*args, **kwargs): method returning the mask to be used in computation of the pruned network output during _f_hook
     """
 
-    def __init__(self, model, *prune_args, prune_method='by_value', **prune_kwargs):
+    def __init__(self, model, *prune_args, **prune_kwargs):
         assert type(self) is not DynamicPrune, "Tried to instantiate object of type DynamicPrune, which is abstract"
-        if not hasattr(self, '_prune_%s' % prune_method):
-            raise NotImplementedError('Passed pruning method has not been implemented: %s' % prune_method)
-        self.prune_method = prune_method
         self.device = _get_device(model)
         self.model = model
         self.module_names = []
@@ -34,6 +31,8 @@ class DynamicPrune:
         self._f_hooks = {}
         self.masks = {}
         self._setup_pruning(prune_args, prune_kwargs)
+        # bool whether currently masking pruned outputs
+        self.masking = True
 
     def _setup_pruning(self, prune_args, prune_kwargs):
         assert hasattr(self.model, 'modules'), "Model does not have modules() method"
@@ -48,14 +47,17 @@ class DynamicPrune:
             self.modules[name] = m
             self.name_from_module[m] = name
             self._f_hooks[name] = m.register_forward_hook(self._f_hook)
-            self.masks[m] = self._prune(m, *prune_args, **prune_kwargs)
+            self.masks[name] = self.prune(m, *prune_args, **prune_kwargs)
 
     def stop_masking(self):
         for hook in self._f_hooks.values():
             hook.remove()
+        self.masking = False
 
     def resume_masking(self):
-        pass  # TODO
+        for name, m in self.modules.items():
+            self._f_hooks[name] = m.register_forward_hook(self._f_hook)
+        self.masking = True
 
 
 class ActivationPrune(DynamicPrune):
@@ -66,10 +68,10 @@ class ActivationPrune(DynamicPrune):
     def _f_hook(self, module, input, output):
         m_name = self.name_from_module[module]
         mask = self.masks[m_name]
-        output[mask] = 0.0
-        return output
+        output[(slice(None), *mask)] = 0.0
+        return None
 
-    def _prune(self, module, *args, **kwargs):
+    def prune(self, module, *args, **kwargs):
         return self._prune_by_value(module, *args, **kwargs)
 
     """
