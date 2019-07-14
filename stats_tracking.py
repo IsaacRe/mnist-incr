@@ -115,6 +115,18 @@ class Stats:
     def __repr__(self):
         return str(self.export())
 
+    def __iter__(self):
+        return self.stats.__iter__()
+
+    def values(self):
+        return list(self.stats.values())
+
+    def keys(self):
+        return list(self.stats)
+
+    def items(self):
+        return list(self.stats.items())
+
     def export(self, *out_stats):
         return [(stat, torch.flatten(self[stat]).data.numpy()) for stat in self.stats if stat in out_stats]
 

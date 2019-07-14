@@ -18,7 +18,7 @@ class DynamicPrune:
     Inheriting classes must implement:
         _f_hook(module, input, output): the method that will me registered with each module undergoing pruning and
                                         called during that module's forward pass to alter its output
-        _prune(*args, **kwargs): method returning the mask to be used in computation of the pruned network output during _f_hook
+        prune(*args, **kwargs): method returning the mask to be used in computation of the pruned network output during _f_hook
     """
 
     def __init__(self, model, *prune_args, **prune_kwargs):
@@ -69,22 +69,36 @@ class ActivationPrune(DynamicPrune):
     def _f_hook(self, module, input, output):
         m_name = self.name_from_module[module]
         mask = self.masks[m_name]
+        # add : slice to account for batch dim
         output[(slice(None), *mask)] = 0.0
         self.prune_ratio[m_name] = int(mask[0].shape[0]), int(output[0].numel())
         return None
 
-    def prune(self, module, *args, **kwargs):
-        return self._prune_by_value(module, *args, **kwargs)
+    def prune(self, module, prune_by, *args, **kwargs):
+        if 'random' == prune_by:
+            return self._prune_random(module, kwargs['prune_rate'])
+        return self._prune_by_value(module, prune_by, *args, **kwargs)
 
     """
-    All pruning methods must return a mask that is the same shape of the passed module's output
+    All pruning methods must return a set of indices used to dereference the passed module's output
     """
+
+    def _prune_random(self, module, prune_rate):
+        assert hasattr(module, 'running_stats'), "Passed module has no running stats attached"
+        assert module.running_stats != {}, "Module's running stats has no entries from which to ascertain output shape"
+        dims = module.running_stats.values()[0].shape
+        indices = torch.LongTensor(np.indices(dims)).flatten(start_dim=1)
+        output_size = indices.shape[1]
+        num_prune = int(prune_rate * output_size)
+        selected = np.random.choice(output_size, num_prune, replace=False)
+        return tuple(indices[:, selected])
 
     def _prune_by_value(self, module, stat_name, alpha=0.1, prune_rate=None, prune_highest=False):
         assert hasattr(module, 'running_stats'), "Passed module has no running stats attached"
         assert hasattr(module.running_stats, stat_name), "Module's running stats has no entry for stat: %s" % stat_name
         values = module.running_stats[stat_name]
-        if prune_rate is None:
-            return np.where(values > alpha) if prune_highest else np.where(values < alpha)
-        else:
-            raise NotImplementedError("Prune_rate not currently implemented")
+        if prune_rate is not None:
+            sorted_out, _ = values.flatten().sort(descending=prune_highest)
+            num_prune = int(prune_rate * sorted_out.shape[0])
+            alpha = sorted_out[num_prune]
+        return np.where(values > alpha) if prune_highest else np.where(values < alpha)

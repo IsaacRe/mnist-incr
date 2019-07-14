@@ -8,6 +8,7 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import SubsetRandomSampler
 import numpy as np
+import matplotlib.pyplot as plt
 from stats_tracking import ActivationTracker
 from prune import ActivationPrune
 
@@ -118,6 +119,8 @@ def test(args, model, device, test_loaders, stats_tracker=None, pruner=None):
             np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
                                                                          args.num_lexp, args.id), accs=accs, loss=loss)
 
+    return 100. * correct / len(test_loader.dataset)
+
 
 def main():
     # Training settings
@@ -153,8 +156,12 @@ def main():
     parser.add_argument('--test-prune', action='store_true',
                         help='Whether to test effect of network pruning on accuracy - only implemented for batch learning')
     parser.add_argument('--alpha', type=float, default=0.1, help='Threshold for pruning by the given statistic')
-    parser.add_argument('--prune-by', type=str, default='out',
+    parser.add_argument('--prune-rate', type=float,
+                        help='Number of output neurons to prune relative to total number of output neurons')
+    parser.add_argument('--prune-by', type=str, default=['out'], nargs='+', choices=ActivationTracker.STATS+['random'],
                         help='The statistic by which the network outputs will be pruned')
+    parser.add_argument('--plot-prune-rate', action='store_true',
+                        help='Whether to plot differences in accuracy for different pruning methods as prune rate increases')
 
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
@@ -248,8 +255,22 @@ def main():
         train(args, model, device, train_loader, optimizer)
         test(args, model, device, test_loaders, stats_tracker)
         if args.test_prune:
-            pruner = ActivationPrune(model, args.prune_by, alpha=args.alpha)
-            test(args, model, device, test_loaders, pruner=pruner)
+            prune_rates = np.arange(0.0, 1.0, 0.1) if args.plot_prune_rate else [args.prune_rate]
+            accs = {crit: [] for crit in args.prune_by}
+            for prune_rate in prune_rates:
+                for criteria in args.prune_by:
+                    print('Testing prune by %s...' % criteria)
+                    pruner = ActivationPrune(model, criteria, alpha=args.alpha, prune_rate=prune_rate)
+                    accuracy = test(args, model, device, test_loaders, pruner=pruner)
+                    accs[criteria] += [accuracy]
+            if args.plot_prune_rate:
+                for criteria in args.prune_by:
+                    plt.plot(prune_rates, accs[criteria], label=criteria)
+                plt.xlabel('Prune Rate')
+                plt.ylabel('% Accuracy')
+                plt.title('MNIST 1-Epoch Accuracy after Pruning')
+                plt.legend()
+                plt.savefig('prune_rate_plot.png')
 
     if (args.save_model):
         if args.num_updates is None:
