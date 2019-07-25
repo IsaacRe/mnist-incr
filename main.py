@@ -1,5 +1,6 @@
 from __future__ import print_function
 from os.path import exists
+from os import system
 import argparse
 import torch
 import torch.nn as nn
@@ -32,19 +33,98 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=1)
 
 
+accs, losses = [], []
+
+
+def run(args, model, device, loader, optimizer, exposure=0, train=False, test=False, stats_tracker=None, pruner=None):
+    """
+    Currently testing will not work for incremental datasets making use of SubsetRandomSampler
+    :param args:
+    :param model:
+    :param device:
+    :param loader:
+    :param optimizer:
+    :param exposure:
+    :param train:
+    :param test:
+    :param stats_tracker:
+    :param pruner:
+    :return:
+    """
+    if train or (stats_tracker is not None and stats_tracker.requires_backward):
+        model.train()
+    else:
+        model.eval()
+    if test and args.save_acc:
+        global accs, losses
+
+    if pruner is not None and pruner.masking:
+        num_out, num_prune = 0, 0
+        for masked, total in pruner.prune_ratio.values():
+            num_out += total
+            num_prune += masked
+
+        print('\nNumber of pruned outputs: {}/{}\n'.format(num_prune, num_out))
+
+    for epoch in range(args.num_epoch):
+        test_loss, correct = 0, 0
+        for batch_idx, (data, target) in enumerate(loader):
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
+            output = model(data)
+            loss = F.nll_loss(output, target)
+
+            if test:
+                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                correct += pred.eq(target.view_as(pred)).sum().item()
+                test_loss += loss.item()
+
+            if train or (stats_tracker is not None and stats_tracker.requires_backward):
+                loss.backward()
+                if train:
+                    optimizer.step()
+
+            # log training status
+            if train and batch_idx % args.log_interval == 0:
+                if args.incremental:
+                    print('Learning Exposure: {}, {}/{}th epoch [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                        exposure, epoch + 1, args.num_epoch, batch_idx * loader.batch_size, len(loader.sampler.indices),
+                             100. * loader.batch_size * batch_idx / len(loader.sampler.indices), loss.item()))
+                else:
+                    print('{}/{}th epoch [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                        epoch + 1, args.num_epoch, batch_idx * loader.batch_size, len(loader) * loader.batch_size,
+                        100. * batch_idx / len(loader), loss.item()))
+
+        # log test status
+        if test:
+            test_loss /= len(loader.dataset)
+            # TODO generalize to testing on incremental datasets as well (SubsetRandomSampler)
+            print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+                  test_loss, correct, len(loader.dataset), 100. * correct / len(loader.dataset)))
+
+            if args.save_acc:
+                accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
+                losses = np.concatenate([losses, np.array([test_loss])])
+                np.savez(experiment_id(args), accs=accs, loss=losses)
+
+            # break out of training loop if testing
+            return 100. * correct / len(loader.dataset)
+
+
 running_loss = 0
 
 
-def join_backward(loss, optimizer, update=False):
+def join_backward(loss, optimizer, update=False, train=True):
     global running_loss
     running_loss += loss
     if update:
         running_loss.backward()
-        optimizer.step()
+        if train:
+            optimizer.step()
         running_loss = 0
 
 
-def train(args, model, device, train_loader, optimizer, exp=0):
+def train(args, model, device, train_loader, optimizer, exp=0, update_weight=True):
     model.train()
     for epoch in range(args.num_epoch):
         if args.num_updates is not None:
@@ -56,10 +136,11 @@ def train(args, model, device, train_loader, optimizer, exp=0):
             loss = F.nll_loss(output, target)
             if args.num_updates is None:
                 loss.backward()
-                optimizer.step()
+                if update_weight:
+                    optimizer.step()
             else:
                 assert not args.track_stats, "Incompatible arguments: --track-stats; --num-updates"
-                join_backward(loss, optimizer, batch_idx in update_idxs)
+                join_backward(loss, optimizer, batch_idx in update_idxs, train=update_weight)
             if batch_idx % args.log_interval == 0:
                 if args.incremental:
                     print('Learning Exposure: {}, {}/{}th epoch [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
@@ -71,19 +152,24 @@ def train(args, model, device, train_loader, optimizer, exp=0):
                         100. * batch_idx / len(train_loader), loss.item()))
 
 
-accs, loss = [], []
-
-
 def test(args, model, device, test_loaders, stats_tracker=None, pruner=None):
     global accs, loss
-    model.eval()
+    if stats_tracker is None:
+        model.eval()
+    else:
+        model.train()
     test_loss = 0
     correct = 0
     for i, test_loader in enumerate(test_loaders):
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            if stats_tracker is None:
+                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            else:
+                temp_loss = F.nll_loss(output, target, reduction='sum')  # sum up batch loss
+                temp_loss.backward()
+                test_loss += temp_loss.item()
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
     if stats_tracker is not None:
@@ -91,7 +177,7 @@ def test(args, model, device, test_loaders, stats_tracker=None, pruner=None):
         all_stats = {}
         for name, stats in stats_tracker.export_stats(*args.stats):
             all_stats[name] = stats
-        np.savez('network_stats/activations.npz', **all_stats)
+        np.savez('%s/activations.npz' % experiment_id(args), **all_stats)
 
     test_loss /= len(test_loader.dataset)
 
@@ -107,17 +193,11 @@ def test(args, model, device, test_loaders, stats_tracker=None, pruner=None):
 
         print('\nNumber of pruned outputs: {}/{}'.format(num_prune, num_out))
 
-    if not args.track_stats:
+    if args.save_acc:
         accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
         loss = np.concatenate([loss, np.array([test_loss])])
 
-        if args.num_updates is None:
-            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
-                     (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
-                     loss=loss)
-        else:
-            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
-                                                                         args.num_lexp, args.id), accs=accs, loss=loss)
+        np.savez(experiment_id(args), accs=accs, loss=loss)
 
     return 100. * correct / len(test_loader.dataset)
 
@@ -145,6 +225,8 @@ def main():
 
     parser.add_argument('--id', type=str, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
+    parser.add_argument('--save-acc', action='store_true',
+                        help='Whether to record overall accuracies after each learning exposure')
 
     # stat tracking args
     parser.add_argument('--track-stats', action='store_true', help='Enable stat tracking')
@@ -162,6 +244,7 @@ def main():
                         help='The statistic by which the network outputs will be pruned')
     parser.add_argument('--plot-prune-rate', action='store_true',
                         help='Whether to plot differences in accuracy for different pruning methods as prune rate increases')
+    parser.add_argument('--save-prune-rate', action='store_true', help='Whether to store accuracy X prune_rate data')
 
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
@@ -182,6 +265,9 @@ def main():
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
+
+    if not exists(experiment_id(args)):
+        system('mkdir %s' % experiment_id(args))
 
     exemplars = {}
 
@@ -206,10 +292,6 @@ def main():
     model = Net().to(device)
     if args.pt is not None:
         model.load_state_dict(torch.load(args.pt))
-
-    stats_tracker = None
-    if args.track_stats:
-        stats_tracker = ActivationTracker(model, args.track_logits)
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
@@ -242,7 +324,7 @@ def main():
                                                        batch_size=args.batch_size, shuffle=False, sampler=sampler,
                                                        **kwargs)
             train(args, model, device, train_loader, optimizer, itr)
-            test(args, model, device, test_loaders, stats_tracker)
+            test(args, model, device, test_loaders)
 
             # save abs_out
 
@@ -252,10 +334,43 @@ def main():
         train_loader = torch.utils.data.DataLoader(train_set,
                                                    batch_size=args.batch_size, shuffle=True,
                                                    **kwargs)
+
+        stats_tracker = None
+        if args.track_stats:
+            stats_tracker = ActivationTracker(model, args.track_logits, requires_backward=True)
+
+        # train for 1 epoch on train data
+        #train(args, model, device, train_loader, optimizer)
+        run(args, model, device, train_loader, optimizer, train=True, stats_tracker=stats_tracker)
+
+        """
+        #### Misc Experiments below #####
+
+        # TODO get avg grad , avg out
+        layer_stats = stats_tracker.export_stats('abs_grad', 'grad', 'out')
+
+        stats_tracker.reset_all()
+        stats_tracker.stop_tracking()
         train(args, model, device, train_loader, optimizer)
-        test(args, model, device, test_loaders, stats_tracker)
+
+        stats_tracker.resume_tracking()
+        stats_tracker.requires_backward = False
+        train(args, model, device, train_loader, optimizer, update_weight=False)
+
+        # TODO get avg out , compare differences among neurons with low initial grad vs those with high
+        layer_stats = stats_tracker.export_stats('out')
+        #################################
+        """
+        #### Test accuracy with pruning
+
+        # test on test data
+        #test(args, model, device, test_loaders, stats_tracker)
+        # TODO test_loaders?? make separate run method for handling class-separated data
+        run(args, model, device, ...)
+        stats_tracker.stop_tracking()
+
         if args.test_prune:
-            prune_rates = np.arange(0.0, 1.0, 0.1) if args.plot_prune_rate else [args.prune_rate]
+            prune_rates = np.arange(0.0, 1.0, 0.05) if args.plot_prune_rate else [args.prune_rate]
             accs = {crit: [] for crit in args.prune_by}
             for prune_rate in prune_rates:
                 for criteria in args.prune_by:
@@ -263,22 +378,44 @@ def main():
                     pruner = ActivationPrune(model, criteria, alpha=args.alpha, prune_rate=prune_rate)
                     accuracy = test(args, model, device, test_loaders, pruner=pruner)
                     accs[criteria] += [accuracy]
+            for criteria in accs:
+                accs[criteria] = np.array([accs[criteria]])
+            if args.save_prune_rate:
+                file = '%s/prune_rate_accs.npz' % experiment_id(args)
+                if exists(file):
+                    accs_l = np.load(file)
+                    for criteria in accs_l.files:
+                        accs[criteria] = np.concatenate([accs_l[criteria], accs[criteria]])
+                np.savez(file, **accs)
             if args.plot_prune_rate:
                 for criteria in args.prune_by:
-                    plt.plot(prune_rates, accs[criteria], label=criteria)
+                    if args.save_prune_rate:
+                        means = np.mean(accs[criteria], axis=0)
+                        errors = np.sqrt(np.sum((accs[criteria] - means) ** 2, axis=0))
+                        #errors = [np.sqrt(sum([(acc - mean) ** 2 for acc in accs[criteria]])) for mean in means]
+                        plt.errorbar(prune_rates, means, errors, label=criteria)
+                    else:
+                        plt.plot(prune_rates, accs[criteria], label=criteria)
                 plt.xlabel('Prune Rate')
                 plt.ylabel('% Accuracy')
                 plt.title('MNIST 1-Epoch Accuracy after Pruning')
                 plt.legend()
                 plt.savefig('prune_rate_plot.png')
 
-    if (args.save_model):
-        if args.num_updates is None:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.pt' %
-                       (args.lexp_len, args.num_explr, args.num_epoch, args.num_updates, args.num_lexp, args.id))
+    if args.save_model:
+        torch.save(model.state_dict(), '%s/model.pt' % experiment_id(args))
+
+
+def experiment_id(args):
+    if args.incremental:
+        if args.num_updates is not None:
+            return '%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp' % \
+                   (args.lexp_len, args.num_explr, args.num_epoch, args.num_updates, args.num_lexp)
         else:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s.pt' %
-                       (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id))
+            return '%d-train_%d-explr_%d-epoch_%d-lexp' % \
+                   (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp)
+    else:
+        return 'batch'
 
 
 if __name__ == '__main__':

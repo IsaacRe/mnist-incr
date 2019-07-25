@@ -5,9 +5,21 @@ import torch
 from main import Net
 
 
+def add_return_index(Dataset):
+    getitem_old = Dataset.__getitem__
+    def getitem(self, i):
+        ret = getitem_old(self, i)
+        if type(ret) is tuple:
+            return (i, *ret)
+        return i, ret
+    Dataset.__getitem__ = getitem
+add_return_index(datasets.MNIST)
+
+
 def get_batch_suite(batch_size, dset_size=None, train=True):
     net = Net()
     x_ent = nn.CrossEntropyLoss()
+
     d_set = datasets.MNIST('../data', train=train, download=True,
                                transform=transforms.Compose([
                                    transforms.ToTensor(),
@@ -23,6 +35,7 @@ def get_batch_suite(batch_size, dset_size=None, train=True):
 def get_incr_suite(batch_size, dset_size=None, train=True):
     net = Net()
     x_ent = nn.CrossEntropyLoss()
+
     d_set = datasets.MNIST('../data', train=train, download=True,
                            transform=transforms.Compose([
                                transforms.ToTensor(),
