@@ -2,6 +2,8 @@ import argparse
 import torch
 import torch.nn as nn
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from test import get_incr_suite, get_batch_suite
 
@@ -99,7 +101,12 @@ for trial in range(number_of_trials):
     break_at += [lexp]
     print('Finished training model {}/{}. Began learning at learning exposure {}'.format(trial + 1, number_of_trials,
                                                                                          lexp + 1))
+    with open('break_at.pkl', 'wb+') as f:
+        pickle.dump(f, break_at, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    """
     plt.hist(break_at)
     plt.title('Num lexps before accuracy increases are maintained')
     plt.xlabel('Learning Exposure')
     plt.savefig('no-explr-time-hist.png')
+    """
