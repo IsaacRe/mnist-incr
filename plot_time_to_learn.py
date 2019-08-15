@@ -2,6 +2,8 @@ import argparse
 import torch
 import torch.nn as nn
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from test import get_incr_suite, get_batch_suite
 
