@@ -5,6 +5,16 @@ import torch
 from main import Net
 
 
+def add_return_index(Dataset):
+    getitem_old = Dataset.__getitem__
+    def getitem(self, i):
+        ret = getitem_old(self, i)
+        if type(ret) is tuple:
+            return (i, *ret)
+        return i, ret
+    Dataset.__getitem__ = getitem
+
+
 def get_batch_suite(batch_size):
     net = Net()
     x_ent = nn.CrossEntropyLoss()
