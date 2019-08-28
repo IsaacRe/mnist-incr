@@ -9,6 +9,8 @@ from torchvision import datasets, transforms
 from torch.utils.data import SubsetRandomSampler, DataLoader
 import numpy as np
 from stats_tracking import ActivationTracker
+from test import add_return_index
+add_return_index(datasets.MNIST)
 
 
 class Net(nn.Module):
@@ -47,7 +49,7 @@ def train(args, model, device, train_loader, optimizer, exp=0):
     for epoch in range(args.num_epoch):
         if args.num_updates is not None:
             update_idxs = list(np.random.choice(len(train_loader), args.num_updates - 1, replace=False)) + [len(train_loader) - 1]
-        for batch_idx, (data, target) in enumerate(train_loader):
+        for batch_idx, (idx, data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             output = model(data)
@@ -78,7 +80,7 @@ def test(args, model, device, test_loaders, stats_tracker=None):
     test_loss = 0
     correct = 0
     for i, test_loader in enumerate(test_loaders):
-        for data, target in test_loader:
+        for idx, data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
