@@ -2,7 +2,6 @@ import numpy as np
 import torch.nn as nn
 from torchvision import datasets, transforms
 import torch
-from main import Net
 
 
 def add_return_index(Dataset):
@@ -16,7 +15,6 @@ def add_return_index(Dataset):
 
 
 def get_batch_suite(batch_size):
-    net = Net()
     x_ent = nn.CrossEntropyLoss()
     d_set = datasets.MNIST('../data', train=True, download=True,
                                transform=transforms.Compose([
@@ -26,4 +24,4 @@ def get_batch_suite(batch_size):
     d_set = torch.utils.data.Subset(d_set, np.arange(10))
     loader = torch.utils.data.DataLoader(d_set, batch_size=batch_size, shuffle=False, num_workers=1, pin_memory=True)
 
-    return net, x_ent, loader
+    return x_ent, loader

@@ -87,19 +87,20 @@ def test(args, model, device, test_loaders):
             correct += pred.eq(target.view_as(pred)).sum().item()
 
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
+        test_loss / len(test_loader.dataset), correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
     accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
     loss = np.concatenate([loss, np.array([test_loss])])
 
-    if args.num_updates is None:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
-                 (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
-                 loss=loss)
-    else:
-        np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
-                                                                     args.num_lexp, args.id), accs=accs, loss=loss)
+    if args.save_acc:
+        if args.num_updates is None:
+            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
+                     (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
+                     loss=loss)
+        else:
+            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
+                                                                         args.num_lexp, args.id), accs=accs, loss=loss)
 
 
 def main():
@@ -122,6 +123,7 @@ def main():
 
     parser.add_argument('--no-save', action='store_false', dest='save_model',
                         help='For Saving the current Model')
+    parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
 
     parser.add_argument('--id', type=str, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
