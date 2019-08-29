@@ -14,9 +14,10 @@ def add_return_index(Dataset):
     Dataset.__getitem__ = getitem
 
 
-def get_batch_suite(batch_size):
+def get_batch_suite(batch_size, train=True):
     x_ent = nn.CrossEntropyLoss()
-    d_set = datasets.MNIST('../data', train=True, download=True,
+    add_return_index(datasets.MNIST)
+    d_set = datasets.MNIST('../data', train=train, download=True,
                                transform=transforms.Compose([
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.1307,), (0.3081,))
