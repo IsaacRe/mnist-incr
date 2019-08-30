@@ -106,12 +106,12 @@ def main():
                         help='For Saving the current Model')
     parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
 
-    parser.add_argument('--id', type=str, help="Identify multiple runs with same params")
+    parser.add_argument('--id', type=str, default=0, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
 
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
-    parser.add_argument('--num-exemplars', type=int, dest='num_explr')
+    parser.add_argument('--num-exemplars', type=int, default=0, dest='num_explr')
     parser.add_argument('--lexp-len', type=int, default=100) # Full dataset has > 5000 samples per class
     parser.add_argument('--num-epoch', type=int, default=10, metavar='N',
                         help='number of epochs to train during each learning exposure')
@@ -197,13 +197,9 @@ def main():
         train(args, model, device, train_loader, optimizer)
         test(args, model, device, test_loaders)
 
-    if (args.save_model):
-        if args.num_updates is None:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.pt' %
-                       (args.lexp_len, args.num_explr, args.num_epoch, args.num_updates, args.num_lexp, args.id))
-        else:
-            torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s.pt' %
-                       (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id))
+    if args.save_model:
+        torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s.pt' %
+                   (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id))
 
 
 if __name__ == '__main__':
