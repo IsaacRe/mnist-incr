@@ -22,7 +22,6 @@ def get_batch_suite(batch_size, train=True):
                                    transforms.ToTensor(),
                                    transforms.Normalize((0.1307,), (0.3081,))
                                ]))
-    d_set = torch.utils.data.Subset(d_set, np.arange(10))
-    loader = torch.utils.data.DataLoader(d_set, batch_size=batch_size, shuffle=False, num_workers=1, pin_memory=True)
+    loader = torch.utils.data.DataLoader(d_set, batch_size=batch_size, shuffle=False)
 
     return x_ent, loader

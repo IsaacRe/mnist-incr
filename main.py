@@ -10,6 +10,7 @@ import numpy as np
 from test import add_return_index
 add_return_index(datasets.MNIST)
 from net import Net
+from feature_matching import within_net_correlation, between_net_correlation
 
 
 running_loss = 0
@@ -75,13 +76,7 @@ def test(args, model, device, test_loaders):
     loss = np.concatenate([loss, np.array([test_loss])])
 
     if args.save_acc:
-        if args.num_updates is None:
-            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-updates_%d-lexp_%s.npz' %
-                     (args.lexp_len, args.num_explr,args.num_epoch, args.num_updates, args.num_lexp, args.id), accs=accs,
-                     loss=loss)
-        else:
-            np.savez('accs_%d-train_%d-explr_%d-epoch_%d-lexp_%s.npz' % (args.lexp_len, args.num_explr, args.num_epoch,
-                                                                         args.num_lexp, args.id), accs=accs, loss=loss)
+        np.savez('%s.npz' % args.save_prefix, accs=accs, loss=loss)
 
 
 def main():
@@ -102,9 +97,19 @@ def main():
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
 
+    # save args
+    parser.add_argument('--save-dir', type=str, default='saved',
+                        help='Directory to save model files, accuracies and correlation matrices in')
+    parser.add_argument('--save-prefix', type=str, default=None,
+                        help='Specify prefix to store trained model, accuracies and correlation matrix')
     parser.add_argument('--no-save', action='store_false', dest='save_model',
                         help='For Saving the current Model')
     parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
+    parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
+    parser.add_argument('--save-corr-matr-lexp', type=int, default=[], nargs='*',
+                        help='Specify lexps to save a within-net correlation matrix')
+    parser.add_argument('--corr-model', type=str, default=None,
+                        help='Specify the model for computation of between-net correlation at each lexp specified')
 
     parser.add_argument('--id', type=str, default=0, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
@@ -148,12 +153,23 @@ def main():
         return torch.utils.data.SubsetRandomSampler(indices.astype('int64'))
     test_loaders = [torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=False,
                                                 sampler=make_sampler(i), **kwargs) for i in range(10)]
+    # iterates over all test data
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False, **kwargs)
 
     model = Net().to(device)
     if args.pt is not None:
         model.load_state_dict(torch.load(args.pt))
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+
+    save_prefix = '%s/%s/mnist_batch_%d-epoch_%s' % (args.save_dir, args.id, args.num_epoch, args.id)
+    if args.incremental:
+        save_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s' % \
+                      (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id)
+        incr_corr_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_' % \
+                           (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch)
+    if args.save_prefix is None:
+        args.save_prefix = save_prefix
 
     if args.incremental:
         assert args.num_lexp % 10 == 0
@@ -168,6 +184,12 @@ def main():
         # save lexp order
         if not exists(lexp_path):
             np.save(lexp_path, lexps)
+
+        # get trained model for iterative between-net correlation computation
+        corr_model = None
+        if args.corr_model is not None:
+            corr_model = Net().to(device)
+            corr_model.load_state_dict(torch.load('%s/%s' % (args.save_dir, args.corr_model)))
 
         for itr, i in enumerate(lexps):
             # select data for learning exposure
@@ -186,7 +208,18 @@ def main():
             train(args, model, device, train_loader, optimizer, itr)
             test(args, model, device, test_loaders)
 
-            # save abs_out
+            # save model
+            if args.save_lexp == itr:
+                torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
+
+            # compute and save within-net correlation matrix
+            if itr in args.save_corr_matr_lexp:
+                correlations = {
+                    'within': within_net_correlation(test_loader, model, 3),
+                }
+                if corr_model is not None:
+                    correlations['between'] = between_net_correlation(test_loader, model, corr_model, 3)
+                np.savez('%s%d-lexp_%s-correlations.npz' % (incr_corr_prefix, itr, args.id), **correlations)
 
             if args.num_explr > 0:
                 exemplars[i] = np.random.choice(indices, args.num_explr, replace=False)
@@ -195,11 +228,10 @@ def main():
                                                    batch_size=args.batch_size, shuffle=True,
                                                    **kwargs)
         train(args, model, device, train_loader, optimizer)
-        test(args, model, device, test_loaders)
+        test(args, model, device, test_loaders, save=args.save_acc)
 
     if args.save_model:
-        torch.save(model.state_dict(), 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s.pt' %
-                   (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id))
+        torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,10 @@
-# Implementation details follow Li et. al. 2016 'Convergent: Do Different Neural Networks Learn The Same
+# Implementation details follow Li et. al. 2016 'Convergent Learning: Do Different Neural Networks Learn The Same
 # Representations?'. https://arxiv.org/abs/1511.07543 .
+import argparse
 import torch
 import numpy as np
+from test import get_batch_suite
+from net import Net
 
 
 class CorrelationTracker:
@@ -30,6 +33,7 @@ class CorrelationTracker:
 
         if net is not None:
             self.n_feat = net.features[feature_idx].out_features
+            self.device = net.features[feature_idx].weight.device
 
         # TODO implement on-line correlation computation
         self.store_on_gpu = store_on_gpu
@@ -51,16 +55,18 @@ class CorrelationTracker:
         for i, (idx, images, labels) in enumerate(dataloader):
             total += len(labels)
             for j, net in enumerate(nets):
+                device = net.features[feature_idx].weight.device
+                out = images.to(device)
                 for k, layer in enumerate(net.features):
-                    out = layer(images)
+                    out = layer(out)
                     if feature_idx == k:
                         break
-                out = torch.mean(out, dim=(0, 1, 2))  # Average over batch and spatial dimensions
+                out = torch.sum(torch.mean(out.data, dim=(2, 3)), dim=0)  # Average over spatial dims sum over batch dims
                 if mu[j] is None:
                     mu[j] = out
                 else:
                     mu[j] += out
-        mu = [m / total for m in mu]
+        mu = [m / total for m in mu]  # now average over batch dimension
         return mu
 
     def set_mode(self, mode):
@@ -81,22 +87,24 @@ class CorrelationTracker:
         """
         feature_idx = self.feature_idx if feature_idx is None else feature_idx
         assert feature_idx is not None, "Attribute, 'feature_idx' is None and no feature_idx was explicitly provided."
+        device = net.features[feature_idx].weight.device
 
         # get mean activation over the data for each feature
         [mu] = self._get_feature_means(dataloader, feature_idx, net)
 
         corr_matr = None
         sig = None
-        total = None
+        total = 0
         for i, (idx, images, labels) in enumerate(dataloader):
             total += len(labels)
-            out = images
+            out = images.to(device)
             for j, layer in enumerate(net.features):
                 out = layer(out)
                 if feature_idx == j:
                     break
-            # TODO make sure dimension 3 is what I think it is
-            out = out.flatten(dim=(0, 1, 2))  # [(batch * width * height) X filters]
+            out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
+            if self.n_feat is None:
+                self.n_feat = out.shape[1]
             assert self.n_feat == out.shape[1], "Output of layer %d number of features does not match self.n_feat"
             n_feat = self.n_feat
 
@@ -104,7 +112,7 @@ class CorrelationTracker:
             deviation = out - mu  # [(B * W * H) X F]
             # corr_matr_temp_ij = deviation_i * deviation_j
             deviation_expanded = deviation.unsqueeze(2).repeat(1, 1, n_feat)  # [(B * W * H) X F X F]
-            corr_matr_temp = deviation_expanded * deviation_expanded.view(0, 2, 1)  # [(B * W * H) X F X F]
+            corr_matr_temp = deviation_expanded * deviation_expanded.transpose(1, 2)  # [(B * W * H) X F X F]
             # sum over batch and spatial dimensions
             corr_matr_temp = torch.sum(corr_matr_temp, dim=0)  # [F X F]
             if corr_matr is None:
@@ -114,19 +122,20 @@ class CorrelationTracker:
 
             # accumulate feature-wise variances for this match
             if sig is None:
-                sig = torch.mean(deviation**2, dim=0)  # [F]
+                sig = torch.sum(deviation**2, dim=0)  # [F]
             else:
-                sig += torch.mean(deviation**2, dim=0)  # [F]
+                sig += torch.sum(deviation**2, dim=0)  # [F]
 
-        sig = (sig / total)**0.5  # feature-wise std deviation
-        corr_matr /= total  # un-normalized correlation matrix
+        total_feats = n_feat**2  # total number of outputs for each filter across both spatial dimensions
+        sig = (sig / total / total_feats)**0.5  # feature-wise std deviation
+        corr_matr /= (total * total_feats)  # un-normalized correlation matrix
 
         # sig_matr_ij = sig_i * sig_j
         sig_expanded = sig.unsqueeze(1).repeat(1, n_feat)  # [F X F]
-        sig_matr = sig_expanded * sig_expanded.view(1, 0)
+        sig_matr = sig_expanded * sig_expanded.transpose(0, 1)
         corr_matr /= sig_matr  # normalized correlation matrix
 
-        return corr_matr
+        return corr_matr.cpu().numpy()
 
     def between_net_corr(self, dataloader, net_1, net_2, feature_idx=None):
         """
@@ -144,18 +153,21 @@ class CorrelationTracker:
 
         corr_matr = None
         sigs = [None, None]
-        total = None
+        total = 0
         for i, (idx, images, labels) in enumerate(dataloader):
             total += len(labels)
             deviations = [None, None]
             for j, net in enumerate([net_1, net_2]):
-                out = images
+                device = net.features[feature_idx].weight.device
+                out = images.to(device)
                 for k, layer in enumerate(net.features):
                     out = layer(out)
                     if feature_idx == k:
                         break
 
-                out = out.flatten(dim=(0, 1, 2))  # [(batch * width * height) X filters]
+                out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
+                if self.n_feat is None:
+                    self.n_feat = out.shape[1]
                 assert self.n_feat == out.shape[1], "Output of layer %d number of features does not match self.n_feat"
                 n_feat = self.n_feat
 
@@ -164,7 +176,7 @@ class CorrelationTracker:
 
             # corr_matr_temp_ij = deviations[0]_i * deviations[1]_j
             dev_1_expanded, dev_2_expanded = [dev.unsqueeze(2).repeat(1, 1, n_feat) for dev in deviations]  # [(B * W * H) X F X F] (each)
-            corr_matr_temp = dev_1_expanded * dev_2_expanded.view(0, 2, 1)  # [(B * W * H) X F X F]
+            corr_matr_temp = dev_1_expanded * dev_2_expanded.transpose(1, 2)  # [(B * W * H) X F X F]
             # sum over batch and spatial dimensions
             corr_matr_temp = torch.sum(corr_matr_temp, dim=0)  # [F X F]
             if corr_matr is None:
@@ -173,20 +185,21 @@ class CorrelationTracker:
                 corr_matr += corr_matr_temp
 
             # accumulate feature-wise variances for this match
-            if sigs == [None, None]:
-                sigs = [torch.mean(dev**2, dim=0) for dev in deviations] # [F] (each)
+            if sigs[0] is None:
+                sigs = [torch.sum(dev**2, dim=0) for dev in deviations]  # [F] (each)
             else:
-                sigs += [torch.mean(dev**2, dim=0) for dev in deviations] # [F] (each)
+                sigs = [sig + torch.sum(dev**2, dim=0) for sig, dev in zip(sigs, deviations)]  # [F] (each)
 
-        sig = [(sig / total)**0.5 for sig in sigs]  # feature-wise std deviation
-        corr_matr /= total  # un-normalized correlation matrix
+        total_feats = n_feat**2  # total number of outputs for each filter across both spatial dimensions
+        sigs = [(sig / total / total_feats)**0.5 for sig in sigs]  # feature-wise std deviation
+        corr_matr /= (total * total_feats)  # un-normalized correlation matrix
 
         # sig_matr_ij = sigs[0]_i * sigs[1]_j
-        # TODO potential bug point
-        sig_matr = sigs[0].unsqueeze(1).repeat(1, n_feat) * sigs[1].unsqueeze(0).repeat(n_feat, 1)
+        sig_1_expanded, sig_2_expanded = [sig.unsqueeze(1).repeat(1, n_feat) for sig in sigs]
+        sig_matr = sig_1_expanded * sig_2_expanded.transpose(0, 1)
         corr_matr /= sig_matr  # normalized correlation matrix
 
-        return corr_matr
+        return corr_matr.cpu().numpy()
 
 
 class FeatureMatcher:
@@ -217,3 +230,45 @@ class FeatureMatcher:
     def many2many(self, corr_matr):
         # TODO
         pass
+
+
+def within_net_correlation(dataloader, net, feature_idx):
+    corr_tracker = CorrelationTracker()
+    return corr_tracker.within_net_corr(dataloader, net, feature_idx=feature_idx)
+
+
+def between_net_correlation(dataloader, net_1, net_2, feature_idx):
+    corr_tracker = CorrelationTracker()
+    return corr_tracker.between_net_corr(dataloader, net_1, net_2, feature_idx=feature_idx)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--nets', type=str, nargs='+', help='paths to model files to use')
+    parser.add_argument('--mode', type=str, nargs='+', choices=['within', 'between'], default=['within'],
+                        help='which type of correlation matrix to generate')
+    parser.add_argument('--feature-idx', type=int, default=3,
+                        help="index of the layer in net.features whose output to use. 3 defaults to output of the 2nd"
+                             "conv layer")
+    parser.add_argument('--no-save', action='store_false', dest='save', help='dont save the matrices generated')
+    args = parser.parse_args()
+
+    _, dataloader = get_batch_suite(100, train=False)
+
+    net_1 = Net()
+    if args.nets[0] != 'random':
+        net_1.load_state_dict(torch.load(args.nets[0]))
+
+    save = {}
+    if 'within' in args.mode:
+        corr_w = within_net_correlation(dataloader, net_1, args.feature_idx)
+        save['within'] = corr_w
+    if 'between' in args.mode:
+        assert len(args.nets) > 1, 'Must specify two networks for between-net correlation'
+        net_2 = Net()
+        if args.nets[1] != 'random':
+            net_2.load_state_dict(torch.load(args.nets[1]))
+        corr_b = between_net_correlation(dataloader, net_1, net_2, args.feature_idx)
+        save['between'] = corr_b
+    if args.save:
+        np.savez('-'.join([net.split('.')[0] for net in args.nets]) + '-correlations.npz', **save)
