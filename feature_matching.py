@@ -212,7 +212,7 @@ class FeatureMatcher:
         many-to-many feature matching (TODO implement)
     """
 
-    def one2one(self, corr_matr, replace=True):
+    def one2one(self, corr_matr, replace=False):
         """
         Uses bipartite semi-matching to find maximally correlated feature for each feature
         :param corr_matr: the correlation matrix
@@ -221,7 +221,13 @@ class FeatureMatcher:
         :return: list, [(f_1, f_2) for every f_1], of maximally correlated feature pairs
         """
         # TODO implement bipartite matching/semi-matching
-        pass
+        matches = np.ndarray(corr_matr.shape[0])
+        correlations = np.ndarray(corr_matr.shape[0])
+        for i in corr_matr.shape[0]:
+            j = np.argmax(corr_matr[i])
+            matches[i] = j
+            correlations[i] = corr_matr[i, j]
+        return matches, correlations
 
     def one2many(self, corr_matr):
         # TODO
@@ -240,6 +246,13 @@ def within_net_correlation(dataloader, net, feature_idx):
 def between_net_correlation(dataloader, net_1, net_2, feature_idx):
     corr_tracker = CorrelationTracker()
     return corr_tracker.between_net_corr(dataloader, net_1, net_2, feature_idx=feature_idx)
+
+
+def match(*args):
+    corr_matr = between_net_correlation(*args)
+    feat_match = FeatureMatcher()
+    matches, corr = feat_match.one2one(corr_matr)
+    return matches, corr
 
 
 if __name__ == '__main__':

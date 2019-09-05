@@ -25,7 +25,7 @@ def join_backward(loss, optimizer, update=False):
         running_loss = 0
 
 
-def train(args, model, device, train_loader, optimizer, exp=0):
+def train(args, model, device, train_loader, optimizer, exp=0, save_corr_matr_func=None):
     model.train()
     for epoch in range(args.num_epoch):
         if args.num_updates is not None:
@@ -50,6 +50,9 @@ def train(args, model, device, train_loader, optimizer, exp=0):
                     print('{}/{}th epoch [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                         epoch + 1, args.num_epoch, batch_idx * train_loader.batch_size, len(train_loader) * train_loader.batch_size,
                         100. * batch_idx / len(train_loader), loss.item()))
+            total_batch = epoch * len(train_loader) + batch_idx
+            if save_corr_matr_func and total_batch % args.save_corr_matr_batch == 0:
+                save_corr_matr_func(model, total_batch)
 
 
 accs, loss = [], []
@@ -108,6 +111,8 @@ def main():
     parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
     parser.add_argument('--save-corr-matr-lexp', type=int, default=[], nargs='*',
                         help='Specify lexps to save a within-net correlation matrix')
+    parser.add_argument('--save-corr-matr-batch', type=int, default=100,
+                        help='Number of training batches between corr matr saves during batch training')
     parser.add_argument('--corr-model', type=str, default=None,
                         help='Specify the model for computation of between-net correlation at each lexp specified')
 
@@ -163,13 +168,20 @@ def main():
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
     save_prefix = '%s/%s/mnist_batch_%d-epoch_%s' % (args.save_dir, args.id, args.num_epoch, args.id)
+    corr_prefix = save_prefix
     if args.incremental:
         save_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s' % \
                       (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id)
-        incr_corr_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_' % \
-                           (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch)
+        corr_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_' % \
+                      (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch)
     if args.save_prefix is None:
         args.save_prefix = save_prefix
+
+    # get trained model for iterative between-net correlation computation
+    corr_model = None
+    if args.corr_model is not None:
+        corr_model = Net().to(device)
+        corr_model.load_state_dict(torch.load('%s/%s' % (args.save_dir, args.corr_model)))
 
     if args.incremental:
         assert args.num_lexp % 10 == 0
@@ -185,11 +197,8 @@ def main():
         if not exists(lexp_path):
             np.save(lexp_path, lexps)
 
-        # get trained model for iterative between-net correlation computation
-        corr_model = None
-        if args.corr_model is not None:
-            corr_model = Net().to(device)
-            corr_model.load_state_dict(torch.load('%s/%s' % (args.save_dir, args.corr_model)))
+        # var to store previous lexp model for computing between-net correlations from one lexp to the next
+        prev_model = None
 
         for itr, i in enumerate(lexps):
             # select data for learning exposure
@@ -219,7 +228,12 @@ def main():
                 }
                 if corr_model is not None:
                     correlations['between'] = between_net_correlation(test_loader, model, corr_model, 3)
-                np.savez('%s%d-lexp_%s-correlations.npz' % (incr_corr_prefix, itr, args.id), **correlations)
+                if prev_model is not None:
+                    correlations['between-incr'] = between_net_correlation(test_loader, model, prev_model, 3)
+                np.savez('%s%d-lexp_%s-correlations.npz' % (corr_prefix, itr, args.id), **correlations)
+
+            prev_model = Net().to(device)
+            prev_model.load_state_dict(model.state_dict())
 
             if args.num_explr > 0:
                 exemplars[i] = np.random.choice(indices, args.num_explr, replace=False)
@@ -227,7 +241,16 @@ def main():
         train_loader = torch.utils.data.DataLoader(train_set,
                                                    batch_size=args.batch_size, shuffle=True,
                                                    **kwargs)
-        train(args, model, device, train_loader, optimizer)
+
+        def save_corr_matr(curr_model, total_batch):
+            correlations = {
+                'within': within_net_correlation(test_loader, curr_model, 3)
+            }
+            if corr_model is not None:
+                correlations['between'] = between_net_correlation(test_loader, curr_model, corr_model, 3)
+            np.savez('%s_%d-batch-correlations.npz' % (corr_prefix, total_batch), **correlations)
+
+        train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
         test(args, model, device, test_loaders, save=args.save_acc)
 
     if args.save_model:
