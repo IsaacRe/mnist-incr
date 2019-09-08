@@ -10,7 +10,7 @@ import numpy as np
 from test import add_return_index
 add_return_index(datasets.MNIST)
 from net import Net
-from feature_matching import within_net_correlation, between_net_correlation
+from feature_matching import within_net_correlation, between_net_correlation, match
 
 
 running_loss = 0
@@ -55,7 +55,30 @@ def train(args, model, device, train_loader, optimizer, exp=0, save_corr_matr_fu
                 save_corr_matr_func(model, total_batch)
 
 
-accs, loss = [], []
+accs, per_class_accs, loss = [], [[] for i in range(10)], []
+
+
+def test_per_class(args, model, device, test_loaders):
+    global per_class_accs
+    model.eval()
+    test_loss = 0
+    for i, test_loader in enumerate(test_loaders):
+        correct = 0
+        for idx, data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            correct += pred.eq(target.view_as(pred)).sum().item()
+
+        per_class_accs[i] = np.concatenate([per_class_accs[i], np.array([100. * correct / len(test_loader.dataset)])])
+
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_loss / len(test_loader.dataset), correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
+
+    if args.save_acc:
+        np.savez('%s-per-class-accs.npz' % args.save_prefix, **{str(i): per_class_accs[i] for i in range(10)})
 
 
 def test(args, model, device, test_loaders):
@@ -111,10 +134,14 @@ def main():
     parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
     parser.add_argument('--save-corr-matr-lexp', type=int, default=[], nargs='*',
                         help='Specify lexps to save a within-net correlation matrix')
+    parser.add_argument('--save-match-lexp', type=int, default=[], nargs='*',
+                        help='Specify lexps to compute and save between net feature matches')
     parser.add_argument('--save-corr-matr-batch', type=int, default=100,
                         help='Number of training batches between corr matr saves during batch training')
     parser.add_argument('--corr-model', type=str, default=None,
                         help='Specify the model for computation of between-net correlation at each lexp specified')
+    parser.add_argument('--feature-idx', type=int, nargs='+', default=[3],
+                        help='Specify index of features to use in correlation computation')
 
     parser.add_argument('--id', type=str, default=0, help="Identify multiple runs with same params")
     parser.add_argument('--pt', type=str, default=None, help="Specify the model to pretrain from")
@@ -132,6 +159,7 @@ def main():
     parser.add_argument('--new-perm', action='store_true', help='Whether to choose a new random learning exposure perm')
     parser.add_argument('--fix-class-lexp', action='store_true', help='Whether to iterate through all classes before'
                                                                       'beginning a new permutation')
+    parser.add_argument('--per-class', action='store_true', help='Whether to store per-class accuracies')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -183,6 +211,10 @@ def main():
         corr_model = Net().to(device)
         corr_model.load_state_dict(torch.load('%s/%s' % (args.save_dir, args.corr_model)))
 
+    matches = {
+        'between': [],
+        'between-incr': []
+    }
     if args.incremental:
         assert args.num_lexp % 10 == 0
         lexp_path = '%d-lexps.npy' % args.num_lexp
@@ -216,21 +248,33 @@ def main():
                                                        **kwargs)
             train(args, model, device, train_loader, optimizer, itr)
             test(args, model, device, test_loaders)
+            if args.per_class:
+                test_per_class(args, model, device, test_loaders)
 
             # save model
             if args.save_lexp == itr:
                 torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
 
-            # compute and save within-net correlation matrix
+            # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
                 correlations = {
-                    'within': within_net_correlation(test_loader, model, 3),
+                    'within': within_net_correlation(test_loader, model, args.feature_idx),
                 }
                 if corr_model is not None:
-                    correlations['between'] = between_net_correlation(test_loader, model, corr_model, 3)
+                    correlations['between'] = between_net_correlation(test_loader, model, corr_model, args.feature_idx)
                 if prev_model is not None:
-                    correlations['between-incr'] = between_net_correlation(test_loader, model, prev_model, 3)
+                    correlations['between-incr'] = between_net_correlation(test_loader, model, prev_model,
+                                                                           args.feature_idx)
                 np.savez('%s%d-lexp_%s-correlations.npz' % (corr_prefix, itr, args.id), **correlations)
+
+            # compute and save between net matching
+            if itr in args.save_match_lexp:
+                for f in args.feature_idx:
+                    if prev_model is not None:
+                        matches['between-incr'] += [(itr, *match(test_loader, model, prev_model, f))]
+                    if corr_model is not None:
+                        matches['between'] += [(itr, *match(test_loader, model, corr_model, f))]
+                    np.savez('%s-layer-%d-matches.npz' % (args.save_prefix, f), **matches)
 
             prev_model = Net().to(device)
             prev_model.load_state_dict(model.state_dict())
@@ -244,10 +288,10 @@ def main():
 
         def save_corr_matr(curr_model, total_batch):
             correlations = {
-                'within': within_net_correlation(test_loader, curr_model, 3)
+                'within': within_net_correlation(test_loader, curr_model, args.feature_idx)
             }
             if corr_model is not None:
-                correlations['between'] = between_net_correlation(test_loader, curr_model, corr_model, 3)
+                correlations['between'] = between_net_correlation(test_loader, curr_model, corr_model, args.feature_idx)
             np.savez('%s_%d-batch-correlations.npz' % (corr_prefix, total_batch), **correlations)
 
         train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
