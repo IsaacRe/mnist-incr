@@ -78,7 +78,8 @@ def test_per_class(args, model, device, test_loaders):
         100. * correct / len(test_loader.dataset)))
 
     if args.save_acc:
-        np.savez('%s-per-class-accs.npz' % args.save_prefix, **{str(i): per_class_accs[i] for i in range(10)})
+        np.savez('%s/%s-per-class-accs.npz' % (args.acc_dir, args.save_prefix),
+                 **{str(i): per_class_accs[i] for i in range(10)})
 
 
 def test(args, model, device, test_loaders):
@@ -102,7 +103,7 @@ def test(args, model, device, test_loaders):
     loss = np.concatenate([loss, np.array([test_loss])])
 
     if args.save_acc:
-        np.savez('%s.npz' % args.save_prefix, accs=accs, loss=loss)
+        np.savez('%s/%s.npz' % (args.acc_dir, args.save_prefix), accs=accs, loss=loss)
 
 
 def main():
@@ -124,8 +125,12 @@ def main():
                         help='how many batches to wait before logging training status')
 
     # save args
-    parser.add_argument('--save-dir', type=str, default='saved',
-                        help='Directory to save model files, accuracies and correlation matrices in')
+    parser.add_argument('--model-dir', type=str, default='models',
+                        help='Directory to save model files')
+    parser.add_argument('--acc-dir', type=str, default='accs',
+                        help='Directory to save accuracy files')
+    parser.add_argument('--corr-dir', type=str, default='correlations',
+                        help='Directory to save correlation, feature matching and other analysis files')
     parser.add_argument('--save-prefix', type=str, default=None,
                         help='Specify prefix to store trained model, accuracies and correlation matrix')
     parser.add_argument('--no-save', action='store_false', dest='save_model',
@@ -149,8 +154,8 @@ def main():
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
     parser.add_argument('--num-exemplars', type=int, default=0, dest='num_explr')
-    parser.add_argument('--lexp-len', type=int, default=100) # Full dataset has > 5000 samples per class
-    parser.add_argument('--num-epoch', type=int, default=10, metavar='N',
+    parser.add_argument('--lexp-len', type=int, default=1000)  # Full dataset has 10000 samples per class
+    parser.add_argument('--num-epoch', type=int, default=1, metavar='N',
                         help='number of epochs to train during each learning exposure')
     parser.add_argument('--num-lexp', default=10, type=int,
                         help='Number of learning exposure')
@@ -195,13 +200,10 @@ def main():
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    save_prefix = '%s/%s/mnist_batch_%d-epoch_%s' % (args.save_dir, args.id, args.num_epoch, args.id)
-    corr_prefix = save_prefix
+    save_prefix = 'mnist_batch_%d-epoch_%s' % (args.num_epoch, args.id)
     if args.incremental:
-        save_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s' % \
-                      (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id)
-        corr_prefix = '%s/%s/mnist_%d-train_%d-explr_%d-epoch_' % \
-                      (args.save_dir, args.id, args.lexp_len, args.num_explr, args.num_epoch)
+        save_prefix = 'mnist_%d-train_%d-explr_%d-epoch_%d-lexp_%s' % \
+                      (args.lexp_len, args.num_explr, args.num_epoch, args.num_lexp, args.id)
     if args.save_prefix is None:
         args.save_prefix = save_prefix
 
@@ -209,12 +211,17 @@ def main():
     corr_model = None
     if args.corr_model is not None:
         corr_model = Net().to(device)
-        corr_model.load_state_dict(torch.load('%s/%s' % (args.save_dir, args.corr_model)))
+        corr_model.load_state_dict(torch.load('%s/%s' % (args.model_dir, args.corr_model)))
 
-    matches = {
+    correlations = {f: {
+        'between': [],
+        'between-incr': [],
+        'within': []
+    } for f in args.feature_idx}
+    matches = {f: {
         'between': [],
         'between-incr': []
-    }
+    } for f in args.feature_idx}
     if args.incremental:
         assert args.num_lexp % 10 == 0
         lexp_path = '%d-lexps.npy' % args.num_lexp
@@ -253,28 +260,29 @@ def main():
 
             # save model
             if args.save_lexp == itr:
-                torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
+                torch.save(model.state_dict(), '%s/%s.pt' % (args.model_dir, args.save_prefix))
 
             # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
-                correlations = {
-                    'within': within_net_correlation(test_loader, model, args.feature_idx),
-                }
-                if corr_model is not None:
-                    correlations['between'] = between_net_correlation(test_loader, model, corr_model, args.feature_idx)
-                if prev_model is not None:
-                    correlations['between-incr'] = between_net_correlation(test_loader, model, prev_model,
-                                                                           args.feature_idx)
-                np.savez('%s%d-lexp_%s-correlations.npz' % (corr_prefix, itr, args.id), **correlations)
+                for f in args.feature_idx:
+                    correlations[f]['within'] += [(itr, *within_net_correlation(test_loader, model, f))]
+                    if corr_model is not None:
+                        correlations[f]['between'] += [(itr, *between_net_correlation(test_loader,
+                                                                                      model, corr_model, f))]
+                    if prev_model is not None:
+                        correlations[f]['between-incr'] += [(itr, *between_net_correlation(test_loader,
+                                                                                           model, prev_model, f))]
+                    np.savez('%s/%s-layer-%d-correlations.npz' % (args.corr_dir, args.save_prefix, f),
+                             **correlations[f])
 
             # compute and save between net matching
             if itr in args.save_match_lexp:
                 for f in args.feature_idx:
                     if prev_model is not None:
-                        matches['between-incr'] += [(itr, *match(test_loader, model, prev_model, f))]
+                        matches[f]['between-incr'] += [(itr, *match(test_loader, model, prev_model, f))]
                     if corr_model is not None:
-                        matches['between'] += [(itr, *match(test_loader, model, corr_model, f))]
-                    np.savez('%s-layer-%d-matches.npz' % (args.save_prefix, f), **matches)
+                        matches[f]['between'] += [(itr, *match(test_loader, model, corr_model, f))]
+                    np.savez('%s/%s-layer-%d-matches.npz' % (args.corr_dir, args.save_prefix, f), **matches[f])
 
             prev_model = Net().to(device)
             prev_model.load_state_dict(model.state_dict())
@@ -286,13 +294,21 @@ def main():
                                                    batch_size=args.batch_size, shuffle=True,
                                                    **kwargs)
 
-        def save_corr_matr(curr_model, total_batch):
-            correlations = {
-                'within': within_net_correlation(test_loader, curr_model, args.feature_idx)
-            }
-            if corr_model is not None:
-                correlations['between'] = between_net_correlation(test_loader, curr_model, corr_model, args.feature_idx)
-            np.savez('%s_%d-batch-correlations.npz' % (corr_prefix, total_batch), **correlations)
+        correlations = {f: {
+            'between': [],
+            'between-incr': [],
+            'within': []
+        } for f in args.feature_idx}
+
+        def save_corr_matr(curr_model):
+            global correlations
+            for f in args.feature_idx:
+                correlations = {
+                    'within': within_net_correlation(test_loader, curr_model, args.feature_idx)
+                }
+                if corr_model is not None:
+                    correlations['between'] = between_net_correlation(test_loader, curr_model, corr_model, args.feature_idx)
+                np.savez('%s/%s-layer-%d-correlations.npz' % (args.corr_dir, args.save_prefix, f), **correlations)
 
         train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
         test(args, model, device, test_loaders, save=args.save_acc)
