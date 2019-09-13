@@ -9,12 +9,22 @@ from torch.utils.data import SubsetRandomSampler, DataLoader
 import numpy as np
 from test import add_return_index
 add_return_index(datasets.MNIST)
+
 from net import Net
 from feature_matching import within_net_correlation, between_net_correlation, match
 
 
 running_loss = 0
 
+class LogisticRegression(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(LogisticRegression, self).__init__()
+        self.linear = nn.Linear(input_size, num_classes)
+    
+    def forward(self, x):
+        out = self.linear(x)
+        out = F.log_softmax(out, dim=1)
+        return out
 
 def join_backward(loss, optimizer, update=False):
     global running_loss
@@ -31,10 +41,15 @@ def train(args, model, device, train_loader, optimizer, exp=0, save_corr_matr_fu
         if args.num_updates is not None:
             update_idxs = list(np.random.choice(len(train_loader), args.num_updates - 1, replace=False)) + [len(train_loader) - 1]
         for batch_idx, (idx, data, target) in enumerate(train_loader):
+            
+            if args.logistic:
+                data = data.view(data.size(0),data.size(2)*data.size(2))
+            
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             output = model(data)
             loss = F.nll_loss(output, target)
+
             if args.num_updates is None:
                 loss.backward()
                 optimizer.step()
@@ -65,6 +80,10 @@ def test_per_class(args, model, device, test_loaders):
     for i, test_loader in enumerate(test_loaders):
         correct = 0
         for idx, data, target in test_loader:
+
+            if args.logistic:
+                data = data.view(data.size(0),data.size(2)*data.size(2))
+
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
@@ -89,6 +108,10 @@ def test(args, model, device, test_loaders):
     correct = 0
     for i, test_loader in enumerate(test_loaders):
         for idx, data, target in test_loader:
+
+            if args.logistic:
+                data = data.view(data.size(0),data.size(2)*data.size(2))
+
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
@@ -171,6 +194,8 @@ def main():
     parser.add_argument('--fix-class-lexp', action='store_true', help='Whether to iterate through all classes before'
                                                                       'beginning a new permutation')
     parser.add_argument('--per-class', action='store_true', help='Whether to store per-class accuracies')
+    parser.add_argument('--logistic', action='store_true', help='Whether to use logistic regression model')
+
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -200,7 +225,12 @@ def main():
     # iterates over all test data
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False, **kwargs)
 
-    model = Net().to(device)
+    if args.logistic:
+        model = LogisticRegression(784, 10).to(device)
+    else:
+        model = Net().to(device)
+
+
     if args.pt is not None:
         model.load_state_dict(torch.load(args.pt))
 
@@ -293,8 +323,12 @@ def main():
                     if corr_model is not None:
                         matches[f]['between'] += [(itr, *match(test_loader, model, corr_model, f))]
                     np.savez('%s/%s-layer-%d-matches.npz' % (args.corr_dir, args.save_prefix, f), **matches[f])
+            
+            if args.logistic:
+                prev_model = LogisticRegression(784, 10).to(device)
+            else:
+                prev_model = Net().to(device)
 
-            prev_model = Net().to(device)
             prev_model.load_state_dict(model.state_dict())
 
             if args.num_explr > 0:
@@ -325,7 +359,7 @@ def main():
                              **correlations[f])
 
         train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
-        test(args, model, device, test_loaders, save=args.save_acc)
+        test(args, model, device, test_loaders)
 
     if args.save_model:
         torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
