@@ -240,18 +240,24 @@ class FeatureMatcher:
         pass
 
 
-def within_net_correlation(dataloader, net, feature_idx):
-    corr_tracker = CorrelationTracker()
-    return corr_tracker.within_net_corr(dataloader, net, feature_idx=feature_idx)
+def threshold_correlations(corr_matr, threshold):
+    return len(np.where(np.abs(corr_matr) > threshold)[0]) / corr_matr.size
 
 
-def between_net_correlation(dataloader, net_1, net_2, feature_idx):
+def within_net_correlation(dataloader, net, feature_idx, threshold=0.7):
     corr_tracker = CorrelationTracker()
-    return corr_tracker.between_net_corr(dataloader, net_1, net_2, feature_idx=feature_idx)
+    corr_matr = corr_tracker.within_net_corr(dataloader, net, feature_idx=feature_idx)
+    return threshold_correlations(corr_matr, threshold), corr_matr
+
+
+def between_net_correlation(dataloader, net_1, net_2, feature_idx, threshold=0.7):
+    corr_tracker = CorrelationTracker()
+    corr_matr = corr_tracker.between_net_corr(dataloader, net_1, net_2, feature_idx=feature_idx)
+    return threshold_correlations(corr_matr, threshold), corr_matr
 
 
 def match(*args):
-    corr_matr = between_net_correlation(*args)
+    _, corr_matr = between_net_correlation(*args)
     feat_match = FeatureMatcher()
     matches, corr = feat_match.one2one(corr_matr)
     return matches, corr
@@ -263,7 +269,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, nargs='+', choices=['within', 'between'], default=['within'],
                         help='which type of correlation matrix to generate')
     parser.add_argument('--feature-idx', type=int, default=3,
-                        help="index of the layer in net.features whose output to use. 3 defaults to output of the 2nd"
+                        help="index of the layer in net.features whose output to use. 3 is output of the 2nd"
                              "conv layer")
     parser.add_argument('--no-save', action='store_false', dest='save', help='dont save the matrices generated')
     args = parser.parse_args()

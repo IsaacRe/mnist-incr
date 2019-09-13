@@ -137,6 +137,10 @@ def main():
                         help='For Saving the current Model')
     parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
     parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
+
+    # correlation analysis args
+    parser.add_argument('--corr-threshold', type=float, default=0.7,
+                        help='Will return ratio of abs(correlations) over this threshold along with correlation matrix')
     parser.add_argument('--save-corr-matr-lexp', type=int, default=[], nargs='*',
                         help='Specify lexps to save a within-net correlation matrix')
     parser.add_argument('--save-match-lexp', type=int, default=[], nargs='*',
@@ -267,14 +271,18 @@ def main():
             # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
                 for f in args.feature_idx:
-                    correlations[f]['within'] += [(itr, *within_net_correlation(test_loader, model, f))]
+                    correlations[f]['within'] += [(itr, *within_net_correlation(test_loader, model, f,
+                                                                                threshold=args.corr_threshold))]
                     if corr_model is not None:
-                        correlations[f]['between'] += [(itr, *between_net_correlation(test_loader,
-                                                                                      model, corr_model, f))]
+                        correlations[f]['between'] += [(itr, *between_net_correlation(test_loader, model, corr_model,
+                                                                                      f,
+                                                                                      threshold=args.corr_threshold))]
                     if prev_model is not None:
                         correlations[f]['between-incr'] += [(itr, *between_net_correlation(test_loader,
-                                                                                           model, prev_model, f))]
-                    np.savez('%s/%s-layer-%d-correlations.npz' % (args.corr_dir, args.save_prefix, f),
+                                                                                           model, prev_model, f,
+                                                                                           threshold=args.corr_threshold))]
+                    np.savez('%s/%s-layer-%d-thresh-%.2f-correlations.npz' % (args.corr_dir, args.save_prefix, f,
+                                                                            args.corr_threshold),
                              **correlations[f])
 
             # compute and save between net matching
@@ -306,11 +314,15 @@ def main():
             def save_corr_matr(curr_model, num_batches, correlations=correlations):
                 for f in args.feature_idx:
                     correlations[f]['within'] += [(num_batches,
-                                                   within_net_correlation(test_loader, curr_model, f))]
+                                                   *within_net_correlation(test_loader, curr_model, f,
+                                                                           threshold=args.corr_threshold))]
                     if corr_model is not None:
                         correlations[f]['between'] += [(num_batches,
-                                                        between_net_correlation(test_loader, curr_model, corr_model, f))]
-                    np.savez('%s/%s-layer-%d-correlations.npz' % (args.corr_dir, args.save_prefix, f), **correlations[f])
+                                                        *between_net_correlation(test_loader, curr_model, corr_model, f,
+                                                                                 threshold=args.corr_threshold))]
+                    np.savez('%s/%s-layer-%d-thresh-%.2f-correlations.npz' % (args.corr_dir, args.save_prefix, f,
+                                                                            args.corr_threshold),
+                             **correlations[f])
 
         train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
         test(args, model, device, test_loaders, save=args.save_acc)
