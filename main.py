@@ -362,7 +362,7 @@ def main():
         test(args, model, device, test_loaders)
 
     if args.save_model:
-        torch.save(model.state_dict(), '%s.pt' % args.save_prefix)
+        torch.save(model.state_dict(), '%s/%s.pt' % (args.model_dir, args.save_prefix))
 
 
 if __name__ == '__main__':
