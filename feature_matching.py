@@ -95,6 +95,7 @@ class CorrelationTracker:
         corr_matr = None
         sig = None
         total = 0
+        feat_w = 1
         for i, (idx, images, labels) in enumerate(dataloader):
             total += len(labels)
             out = images.to(device)
@@ -102,6 +103,7 @@ class CorrelationTracker:
                 out = layer(out)
                 if feature_idx == j:
                     break
+            feat_w = out.shape[2]
             out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
             if self.n_feat is None:
                 self.n_feat = out.shape[1]
@@ -126,7 +128,7 @@ class CorrelationTracker:
             else:
                 sig += torch.sum(deviation**2, dim=0)  # [F]
 
-        total_feats = n_feat**2  # total number of outputs for each filter across both spatial dimensions
+        total_feats = feat_w**2  # total number of outputs for each filter across both spatial dimensions
         sig = (sig / total / total_feats)**0.5  # feature-wise std deviation
         corr_matr /= (total * total_feats)  # un-normalized correlation matrix
 
@@ -154,6 +156,7 @@ class CorrelationTracker:
         corr_matr = None
         sigs = [None, None]
         total = 0
+        feat_w = 1
         for i, (idx, images, labels) in enumerate(dataloader):
             total += len(labels)
             deviations = [None, None]
@@ -165,6 +168,7 @@ class CorrelationTracker:
                     if feature_idx == k:
                         break
 
+                feat_w = out.shape[2]
                 out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
                 if self.n_feat is None:
                     self.n_feat = out.shape[1]
@@ -190,7 +194,7 @@ class CorrelationTracker:
             else:
                 sigs = [sig + torch.sum(dev**2, dim=0) for sig, dev in zip(sigs, deviations)]  # [F] (each)
 
-        total_feats = n_feat**2  # total number of outputs for each filter across both spatial dimensions
+        total_feats = feat_w**2  # total number of outputs for each filter across both spatial dimensions
         sigs = [(sig / total / total_feats)**0.5 for sig in sigs]  # feature-wise std deviation
         corr_matr /= (total * total_feats)  # un-normalized correlation matrix
 
