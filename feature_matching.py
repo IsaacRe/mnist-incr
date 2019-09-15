@@ -61,7 +61,10 @@ class CorrelationTracker:
                     out = layer(out)
                     if feature_idx == k:
                         break
-                out = torch.sum(torch.mean(out.data, dim=(2, 3)), dim=0)  # Average over spatial dims sum over batch dims
+                out = out.data
+                if len(out.shape) > 2:
+                    out = torch.mean(out, dim=(2, 3))  # Average over spatial dims sum over batch dims
+                out = torch.sum(out, dim=0)
                 if mu[j] is None:
                     mu[j] = out
                 else:
@@ -103,8 +106,11 @@ class CorrelationTracker:
                 out = layer(out)
                 if feature_idx == j:
                     break
-            feat_w = out.shape[2]
-            out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
+            out = out.data
+            feat_w = 1
+            if len(out.shape) > 2:
+                feat_w = out.shape[2]
+                out = out.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
             if self.n_feat is None:
                 self.n_feat = out.shape[1]
             assert self.n_feat == out.shape[1], "Output of layer %d number of features does not match self.n_feat"
@@ -167,9 +173,11 @@ class CorrelationTracker:
                     out = layer(out)
                     if feature_idx == k:
                         break
-
-                feat_w = out.shape[2]
-                out = out.data.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
+                out = out.data
+                feat_w = 1
+                if len(out.shape) > 2:
+                    feat_w = out.shape[2]
+                    out = out.transpose(1, 3).flatten(start_dim=0, end_dim=2)  # [(batch * width * height) X filters]
                 if self.n_feat is None:
                     self.n_feat = out.shape[1]
                 assert self.n_feat == out.shape[1], "Output of layer %d number of features does not match self.n_feat"
