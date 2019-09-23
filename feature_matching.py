@@ -256,20 +256,24 @@ def threshold_correlations(corr_matr, threshold):
     return len(np.where(np.abs(corr_matr) > threshold)[0]) / corr_matr.size
 
 
-def within_net_correlation(dataloader, net, feature_idx, threshold=0.7):
+def within_net_correlation(dataloader, net, feature_idx, threshold=0.7, ret_matr=False):
     corr_tracker = CorrelationTracker()
     corr_matr = corr_tracker.within_net_corr(dataloader, net, feature_idx=feature_idx)
-    return threshold_correlations(corr_matr, threshold), corr_matr
+    if ret_matr:
+        return threshold_correlations(corr_matr, threshold), corr_matr
+    return threshold_correlations(corr_matr, threshold)
 
 
-def between_net_correlation(dataloader, net_1, net_2, feature_idx, threshold=0.7):
+def between_net_correlation(dataloader, net_1, net_2, feature_idx, threshold=0.7, ret_matr=False):
     corr_tracker = CorrelationTracker()
     corr_matr = corr_tracker.between_net_corr(dataloader, net_1, net_2, feature_idx=feature_idx)
-    return threshold_correlations(corr_matr, threshold), corr_matr
+    if ret_matr:
+        return threshold_correlations(corr_matr, threshold), corr_matr
+    return threshold_correlations(corr_matr, threshold)
 
 
 def match(*args):
-    _, corr_matr = between_net_correlation(*args)
+    _, corr_matr = between_net_correlation(*args, ret_matr=True)
     feat_match = FeatureMatcher()
     matches, corr = feat_match.one2one(corr_matr)
     return matches, corr
