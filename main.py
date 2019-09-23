@@ -11,6 +11,7 @@ from test import add_return_index
 add_return_index(datasets.MNIST)
 
 from net import Net
+from weight_map import map_weights, vis_w
 from feature_matching import within_net_correlation, between_net_correlation, match
 
 
@@ -152,6 +153,7 @@ def main():
                         help='Directory to save model files')
     parser.add_argument('--acc-dir', type=str, default='accs',
                         help='Directory to save accuracy files')
+    parser.add_argument('--weight-dir', type=str, default='weights', help='Directory to store input maps')
     parser.add_argument('--corr-dir', type=str, default='correlations',
                         help='Directory to save correlation, feature matching and other analysis files')
     parser.add_argument('--save-prefix', type=str, default=None,
@@ -160,6 +162,10 @@ def main():
                         help='For Saving the current Model')
     parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
     parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
+
+    # input map args
+    parser.add_argument('--save-weight-lexp', type=int, nargs='*', default=[],
+                        help='Learning exposures for which to visualize input map')
 
     # correlation analysis args
     parser.add_argument('--corr-threshold', type=float, default=0.7,
@@ -172,6 +178,7 @@ def main():
                                                                             'during batch training')
     parser.add_argument('--save-corr-matr-batch-interval', type=int, default=100,
                         help='Number of training batches between corr matr saves during batch training')
+    parser.add_argument('--match-batch', action='store_true', help='Perform feature matching at end of batch run')
     parser.add_argument('--corr-model', type=str, default=None,
                         help='Specify the model for computation of between-net correlation at each lexp specified')
     parser.add_argument('--feature-idx', type=int, nargs='+', default=[3],
@@ -183,14 +190,15 @@ def main():
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
     parser.add_argument('--num-exemplars', type=int, default=0, dest='num_explr')
-    parser.add_argument('--lexp-len', type=int, default=1000)  # Full dataset has 10000 samples per class
-    parser.add_argument('--num-epoch', type=int, default=1, metavar='N',
-                        help='number of epochs to train during each learning exposure')
+    parser.add_argument('--lexp-len', type=int, default=5000)  # Full dataset has 5000 samples per class
+    parser.add_argument('--num-epoch', type=int, default=2, metavar='N',
+                        help='number of epochs to train during each larning exposure')
     parser.add_argument('--num-lexp', default=10, type=int,
                         help='Number of learning exposure')
     parser.add_argument('--num-updates', type=int, default=None,
                         help='If set, fixes the number of model updates per epoch of each learning exposure')
-    parser.add_argument('--new-perm', action='store_true', help='Whether to choose a new random learning exposure perm')
+    parser.add_argument('--same-perm', action='store_false', dest='new_perm',
+                        help='Whether to choose a new random learning exposure perm')
     parser.add_argument('--fix-class-lexp', action='store_true', help='Whether to iterate through all classes before'
                                                                       'beginning a new permutation')
     parser.add_argument('--per-class', action='store_true', help='Whether to store per-class accuracies')
@@ -206,6 +214,7 @@ def main():
     exemplars = {}
 
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+    kwargs = {}
     train_set = datasets.MNIST('../data', train=True, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
@@ -217,7 +226,7 @@ def main():
     ]))
 
     def make_sampler(i):
-        select = np.where(test_set.train_labels == i)[0]
+        select = np.where(test_set.test_labels == i)[0]
         indices = np.random.choice(select, len(select), replace=False)
         return torch.utils.data.SubsetRandomSampler(indices.astype('int64'))
     test_loaders = [torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=False,
@@ -275,6 +284,7 @@ def main():
         # var to store previous lexp model for computing between-net correlations from one lexp to the next
         prev_model = None
 
+        input_map = []
         for itr, i in enumerate(lexps):
             # select data for learning exposure
             indices = np.random.choice(np.where(train_set.train_labels == i)[0], args.lexp_len, replace=False)
@@ -301,14 +311,14 @@ def main():
             # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
                 for f in args.feature_idx:
-                    correlations[f]['within'] += [(itr, *within_net_correlation(test_loader, model, f,
+                    correlations[f]['within'] += [(itr, within_net_correlation(test_loader, model, f,
                                                                                 threshold=args.corr_threshold))]
                     if corr_model is not None:
-                        correlations[f]['between'] += [(itr, *between_net_correlation(test_loader, model, corr_model,
+                        correlations[f]['between'] += [(itr, between_net_correlation(test_loader, model, corr_model,
                                                                                       f,
                                                                                       threshold=args.corr_threshold))]
                     if prev_model is not None:
-                        correlations[f]['between-incr'] += [(itr, *between_net_correlation(test_loader,
+                        correlations[f]['between-incr'] += [(itr, between_net_correlation(test_loader,
                                                                                            model, prev_model, f,
                                                                                            threshold=args.corr_threshold))]
                     np.savez('%s/%s-layer-%d-thresh-%.2f-correlations.npz' % (args.corr_dir, args.save_prefix, f,
@@ -331,6 +341,11 @@ def main():
 
             prev_model.load_state_dict(model.state_dict())
 
+            if args.logistic and itr in args.save_weight_lexp:
+                input_map += [(itr, model._modules['linear'].weight.data.cpu().numpy())]
+                np.save('%s/%s-weights.npy' % (args.weight_dir, args.save_prefix),
+                        input_map)
+
             if args.num_explr > 0:
                 exemplars[i] = np.random.choice(indices, args.num_explr, replace=False)
     else:
@@ -348,11 +363,11 @@ def main():
             def save_corr_matr(curr_model, num_batches, correlations=correlations):
                 for f in args.feature_idx:
                     correlations[f]['within'] += [(num_batches,
-                                                   *within_net_correlation(test_loader, curr_model, f,
+                                                   within_net_correlation(test_loader, curr_model, f,
                                                                            threshold=args.corr_threshold))]
                     if corr_model is not None:
                         correlations[f]['between'] += [(num_batches,
-                                                        *between_net_correlation(test_loader, curr_model, corr_model, f,
+                                                        between_net_correlation(test_loader, curr_model, corr_model, f,
                                                                                  threshold=args.corr_threshold))]
                     np.savez('%s/%s-layer-%d-thresh-%.2f-correlations.npz' % (args.corr_dir, args.save_prefix, f,
                                                                             args.corr_threshold),
@@ -360,6 +375,15 @@ def main():
 
         train(args, model, device, train_loader, optimizer, save_corr_matr_func=save_corr_matr)
         test(args, model, device, test_loaders)
+
+        if args.match_batch:
+            for f in args.feature_idx:
+                matches, corr = match(test_loader, model, corr_model, f)
+                print('Feature-match correlation for layer %d: %.4f' % (f, np.mean(corr)))
+
+        if args.save_weight_lexp:
+            np.save('%s/%s-weights.npy' % (args.weight_dir, args.save_prefix),
+                    model._modules['linear'].weight.data.cpu().numpy())
 
     if args.save_model:
         torch.save(model.state_dict(), '%s/%s.pt' % (args.model_dir, args.save_prefix))
