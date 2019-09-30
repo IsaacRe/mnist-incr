@@ -11,7 +11,6 @@ from test import add_return_index
 add_return_index(datasets.MNIST)
 
 from net import Net
-from weight_map import map_weights, vis_w
 from feature_matching import within_net_correlation, between_net_correlation, match
 
 
@@ -71,7 +70,8 @@ def train(args, model, device, train_loader, optimizer, exp=0, save_corr_matr_fu
                 save_corr_matr_func(model, total_batch)
 
 
-accs, per_class_accs, loss = [], [[] for i in range(10)], []
+accs, per_class_accs, loss, train_accs, train_loss = [], [[] for i in range(10)], [], [], []
+feat_map_acc, feat_map_loss = [], []
 
 
 def test_per_class(args, model, device, test_loaders):
@@ -102,13 +102,15 @@ def test_per_class(args, model, device, test_loaders):
                  **{str(i): per_class_accs[i] for i in range(10)})
 
 
-def test(args, model, device, test_loaders):
-    global accs, loss
+def test(args, model, device, test_loaders, train_set=False, id=''):
+    global accs, loss, train_accs, train_loss, feat_map_acc, feat_map_loss
     model.eval()
     test_loss = 0
     correct = 0
+    total = 0
     for i, test_loader in enumerate(test_loaders):
         for idx, data, target in test_loader:
+            total += len(target)
 
             if args.logistic:
                 data = data.view(data.size(0),data.size(2)*data.size(2))
@@ -119,15 +121,43 @@ def test(args, model, device, test_loaders):
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss / len(test_loader.dataset), correct, len(test_loader.dataset),
-        100. * correct / len(test_loader.dataset)))
+    print('\n{} set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        'Train' if train_set else 'Test',
+        test_loss / total, correct, total,
+        100. * correct / total))
 
-    accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
-    loss = np.concatenate([loss, np.array([test_loss])])
+    if train_set:
+        train_accs = np.concatenate([train_accs, np.array([100. * correct / total])])
+        train_loss = np.concatenate([train_loss, np.array([test_loss])])
+        accs_, loss_ = train_accs, train_loss
+    elif id == 'ft-fc':
+        feat_map_acc = np.concatenate([feat_map_acc, np.array([100. * correct / total])])
+        feat_map_loss = np.concatenate([feat_map_loss, np.array([test_loss])])
+        accs_, loss_ = feat_map_acc, feat_map_loss
+    else:
+        accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
+        loss = np.concatenate([loss, np.array([test_loss])])
+        accs_, loss_ = accs, loss
 
     if args.save_acc:
-        np.savez('%s/%s.npz' % (args.acc_dir, args.save_prefix), accs=accs, loss=loss)
+        np.savez('%s/%s%s%s.npz' % (args.acc_dir, args.save_prefix, '-train' if train_set else '', id),
+                 accs=accs_, loss=loss_)
+
+
+def train_fc(args, model, device, train_loader, optimizer, exp=0, num_epoch=1):
+    global feat_map_performance
+    print('Training fc-layer for Learning Exposure %d' % exp)
+    for e in range(num_epoch):
+        for i, x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            with torch.no_grad():
+                feat = model.feature_map(x)
+            out = model.fc2(feat)
+
+            optimizer.zero_grad()
+            loss = F.nll_loss(out, y)
+            loss.backward()
+            optimizer.step()
 
 
 def main():
@@ -160,12 +190,18 @@ def main():
                         help='Specify prefix to store trained model, accuracies and correlation matrix')
     parser.add_argument('--no-save', action='store_false', dest='save_model',
                         help='For Saving the current Model')
+    parser.add_argument('--train-acc', action='store_true',
+                        help='Whether to compute training set accuracy after each learning exposure')
     parser.add_argument('--save-acc', action='store_true', help='whether to record model performance')
     parser.add_argument('--save-lexp', type=int, default=[], nargs='*', help='Specify lexps to save model')
 
     # input map args
     parser.add_argument('--save-weight-lexp', type=int, nargs='*', default=[],
                         help='Learning exposures for which to visualize input map')
+
+    # feature map goodness analysis
+    parser.add_argument('--test-feat-map-lexp', type=int, nargs='*', default=[],
+                        help='Specify learning exposures to test learned feature map (freeze conv + batch train)')
 
     # correlation analysis args
     parser.add_argument('--corr-threshold', type=float, default=0.7,
@@ -190,8 +226,8 @@ def main():
     # incremental training args
     parser.add_argument('--incremental', action='store_true', help='Whether to conduct incremental training')
     parser.add_argument('--num-exemplars', type=int, default=0, dest='num_explr')
-    parser.add_argument('--lexp-len', type=int, default=5000)  # Full dataset has 5000 samples per class
-    parser.add_argument('--num-epoch', type=int, default=2, metavar='N',
+    parser.add_argument('--lexp-len', type=int, default=1000)  # Full dataset has 5000 samples per class
+    parser.add_argument('--num-epoch', type=int, default=1, metavar='N',
                         help='number of epochs to train during each larning exposure')
     parser.add_argument('--num-lexp', default=10, type=int,
                         help='Number of learning exposure')
@@ -301,12 +337,26 @@ def main():
                                                        **kwargs)
             train(args, model, device, train_loader, optimizer, itr)
             test(args, model, device, test_loaders)
+            if args.train_acc:
+                test(args, model, device, [train_loader], train_set=True)
             if args.per_class:
                 test_per_class(args, model, device, test_loaders)
 
             # save model
             if args.save_lexp == itr:
                 torch.save(model.state_dict(), '%s/%s.pt' % (args.model_dir, args.save_prefix))
+
+            # train fc layer to test goodness of current feature map
+            if itr in args.test_feat_map_lexp:
+                model_ = Net().to(device)
+                model_.load_state_dict(model.state_dict())
+                optimizer_ = optim.SGD(model_.parameters(), lr=args.lr, momentum=args.momentum)
+                train_loader = torch.utils.data.DataLoader(train_set,
+                                                           batch_size=args.batch_size,
+                                                           shuffle=True, **kwargs)
+                train_fc(args, model_, device, train_loader, optimizer_, exp=itr, num_epoch=1)
+
+                test(args, model_, device, test_loaders, id='ft-fc')
 
             # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
@@ -342,7 +392,7 @@ def main():
             prev_model.load_state_dict(model.state_dict())
 
             if args.logistic and itr in args.save_weight_lexp:
-                input_map += [(itr, model._modules['linear'].weight.data.cpu().numpy())]
+                input_map += [(itr, i, model._modules['linear'].weight.data.cpu().numpy())]
                 np.save('%s/%s-weights.npy' % (args.weight_dir, args.save_prefix),
                         input_map)
 
