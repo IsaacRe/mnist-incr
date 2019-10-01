@@ -134,14 +134,18 @@ def test(args, model, device, test_loaders, train_set=False, id=''):
         feat_map_acc = np.concatenate([feat_map_acc, np.array([100. * correct / total])])
         feat_map_loss = np.concatenate([feat_map_loss, np.array([test_loss])])
         accs_, loss_ = feat_map_acc, feat_map_loss
+    elif id == 'check':
+        assert accs[-1] == 100. * correct / total
     else:
         accs = np.concatenate([accs, np.array([100. * correct / len(test_loader.dataset)])])
         loss = np.concatenate([loss, np.array([test_loss])])
         accs_, loss_ = accs, loss
 
-    if args.save_acc:
+    if args.save_acc and id != 'check':
         np.savez('%s/%s%s%s.npz' % (args.acc_dir, args.save_prefix, '-train' if train_set else '', id),
                  accs=accs_, loss=loss_)
+
+    return 100. * correct / total
 
 
 def train_fc(args, model, device, train_loader, optimizer, exp=0, num_epoch=1):
@@ -150,9 +154,7 @@ def train_fc(args, model, device, train_loader, optimizer, exp=0, num_epoch=1):
     for e in range(num_epoch):
         for i, x, y in train_loader:
             x, y = x.to(device), y.to(device)
-            with torch.no_grad():
-                feat = model.feature_map(x)
-            out = model.fc2(feat)
+            out = model(x, detach_idx=8)
 
             optimizer.zero_grad()
             loss = F.nll_loss(out, y)
@@ -336,9 +338,13 @@ def main():
                                                        batch_size=args.batch_size, shuffle=False, sampler=sampler,
                                                        **kwargs)
             train(args, model, device, train_loader, optimizer, itr)
-            test(args, model, device, test_loaders)
+            test_ldr = test_loaders
+            train_loader = torch.utils.data.DataLoader(train_set,
+                                                       batch_size=args.batch_size,
+                                                       shuffle=True, **kwargs)
             if args.train_acc:
-                test(args, model, device, [train_loader], train_set=True)
+                test_ldr = [train_loader]
+            score = test(args, model, device, test_ldr)
             if args.per_class:
                 test_per_class(args, model, device, test_loaders)
 
@@ -350,13 +356,12 @@ def main():
             if itr in args.test_feat_map_lexp:
                 model_ = Net().to(device)
                 model_.load_state_dict(model.state_dict())
-                optimizer_ = optim.SGD(model_.parameters(), lr=args.lr, momentum=args.momentum)
-                train_loader = torch.utils.data.DataLoader(train_set,
-                                                           batch_size=args.batch_size,
-                                                           shuffle=True, **kwargs)
+
+                optimizer_ = optim.SGD(model_.parameters(), lr=args.lr/10, momentum=args.momentum)
                 train_fc(args, model_, device, train_loader, optimizer_, exp=itr, num_epoch=1)
 
-                test(args, model_, device, test_loaders, id='ft-fc')
+                score2 = test(args, model_, device, test_ldr, id='ft-fc')
+                assert score2 + 1 >= score
 
             # compute and save correlation matrices
             if itr in args.save_corr_matr_lexp:
