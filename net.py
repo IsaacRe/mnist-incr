@@ -23,9 +23,11 @@ class Net(nn.Module):
         x = F.relu(self.fc1(x))
         return x
 
-    def forward(self, x):
-        x = self.feature_map(x)
-        x = self.fc2(x)
+    def forward(self, x, detach_idx=None):
+        for i, f in enumerate(self.features):
+            x = f(x)
+            if i == detach_idx:
+                x = x.detach()
         return F.log_softmax(x, dim=1)
 
 
