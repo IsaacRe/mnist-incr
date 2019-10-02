@@ -31,6 +31,24 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=1)
 
 
+class TinyNet(nn.Module):
+    def __init__(self):
+        super(TinyNet, self).__init__()
+        self.conv1 = nn.Conv2d(1, 1, 5, 1)
+        self.conv2 = nn.Conv2d(1, 1, 5, 1)
+        self.view = View((-1, 4 * 4))
+        self.fc = nn.Linear(4 * 4, 10)
+        self.features = [self.conv1, F.relu, torch.nn.MaxPool2d(2, 2), self.conv2, F.relu, torch.nn.MaxPool2d(2, 2),
+                         self.view, self.fc]
+
+    def forward(self, x, detach_idx=None):
+        for i, f in enumerate(self.features):
+            x = f(x)
+            if i == detach_idx:
+                x = x.detach()
+        return F.log_softmax(x, dim=1)
+
+
 class ShortNet(nn.Module):
     def __init__(self):
         super(ShortNet, self).__init__()

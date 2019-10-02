@@ -10,7 +10,7 @@ import numpy as np
 from test import add_return_index
 add_return_index(datasets.MNIST)
 
-from net import Net
+from net import Net, TinyNet
 from feature_matching import within_net_correlation, between_net_correlation, match
 
 
@@ -41,7 +41,6 @@ def train(args, model, device, train_loader, optimizer, exp=0, save_corr_matr_fu
         if args.num_updates is not None:
             update_idxs = list(np.random.choice(len(train_loader), args.num_updates - 1, replace=False)) + [len(train_loader) - 1]
         for batch_idx, (idx, data, target) in enumerate(train_loader):
-            
             if args.logistic:
                 data = data.view(data.size(0),data.size(2)*data.size(2))
             
@@ -242,6 +241,9 @@ def main():
     parser.add_argument('--per-class', action='store_true', help='Whether to store per-class accuracies')
     parser.add_argument('--logistic', action='store_true', help='Whether to use logistic regression model')
 
+    # Tiny Net
+    parser.add_argument('--tiny', action='store_true', help='Use the TinyNet architecture')
+
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -274,9 +276,10 @@ def main():
 
     if args.logistic:
         model = LogisticRegression(784, 10).to(device)
+    elif args.tiny:
+        model = TinyNet().to(device)
     else:
         model = Net().to(device)
-
 
     if args.pt is not None:
         model.load_state_dict(torch.load(args.pt))
@@ -391,6 +394,8 @@ def main():
             
             if args.logistic:
                 prev_model = LogisticRegression(784, 10).to(device)
+            elif args.tiny:
+                prev_model = TinyNet().to(device)
             else:
                 prev_model = Net().to(device)
 
